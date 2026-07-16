@@ -1,17 +1,25 @@
 # 03 — Consolidation Algorithm
 
-The nightly agent (Opus/GPT @ 1M/max) executes `~/.copilot/dream/dream-consolidation.prompt.md`. This doc
-explains the logic; the prompt file is the source of truth.
+The nightly agent (Opus/GPT @ 1M/max) executes `~/.copilot/dream/dream-consolidation.prompt.md` as a
+**lean map-reduce orchestrator** — it shards the harvest, fans classification out to parallel sub-agents,
+merges their output deterministically, then fans the edits out to parallel per-skill sub-agents. This doc
+explains the logic; the prompt file is the source of truth. See
+[01-architecture § Map-reduce execution model](01-architecture.md) for *why* it is structured this way.
 
-## Phase 0 — Load
-Read `config.json`, the harvest JSON (via `harvest/latest.json`), `ledger.py stats` + `dump --status active`,
-and the **current content of every target skill** it might touch (so edits are in place, not blind appends).
-It also loads your capture skill (`context-capture/SKILL.md`), whose KEEP/DROP table is the authoritative
-durability filter.
+Throughout, the orchestrator stays **lean**: it holds only compact JSON (manifests, candidates, the
+apply-plan) and one-line sub-agent summaries — never a raw session transcript or a full skill body.
 
-## Phase 1 — Extract candidates
-From each session (user messages = intent, assistant responses = findings) and each commit, extract atomic
-**claims**. Each claim is scored on four axes:
+## Phase 0 — Load & Shard  (orchestrator)
+Read `config.json`, `ledger.py stats` + `dump --status active`, then run `shard.py` to split today's
+harvest into balanced, thread-grouped shards. The orchestrator reads only the shard **manifest**
+(`harvest/shards/latest.json` → `manifest.json`) — file, kind, counts, est_tokens, branches per shard —
+not the shard bodies. An empty day (0 shards) writes a short journal and stops.
+
+## Phase 1 — MAP / Classify  (one sub-agent per shard, in parallel)
+Each MAP sub-agent reads its own `shard-NN.json` (plus the classification rubric and, if configured, your
+KEEP/DROP filter skill), extracts atomic **claims** from every session turn (user = intent, assistant =
+findings) and each commit, scores each, and writes a compact `claims-NN.json`. Each claim is scored on
+four axes:
 
 | Axis | Values | Question |
 |---|---|---|
@@ -26,10 +34,10 @@ From each session (user messages = intent, assistant responses = findings) and e
   - machine-maintenance chatter (disk cleanup, app lag); scheduled-automation run transcripts;
   - rejected explorations; anything `importance < importance_keep_floor` not tied to an active thread.
 - **off-domain** (e.g. a personal weekend side-project): dropped from your service skills. Kept **only** if it
-  yields a durable *dev-workflow* lesson → `domain=dev-workflow`, `target=team-resources`.
+  yields a durable *dev-workflow* lesson → `domain=dev-workflow`, `target = your dev-workflow skill`.
 - **LONG:** durable architecture, topology, naming, cluster/telemetry mapping, API-version quirks, deploy
-  playbooks, repo map, permanent constraints, personal preferences. Apply the capture skill's KEEP filter
-  strictly. → routed to the matching reference skill.
+  playbooks, repo map, permanent constraints, personal preferences. Apply your KEEP/DROP filter
+  (`config.targets.durable_filter_skill`, if set) strictly. → routed to the matching reference skill.
 - **SHORT:** active feature, in-flight PR, ongoing investigation, current bug, still-live test result.
   → routed to `dream-active-work` **only**. In-flight/incident specifics never enter a reference skill.
 - **Split rule:** a live incident often contains one durable lesson + lots of transient detail. The lesson
@@ -38,36 +46,47 @@ From each session (user messages = intent, assistant responses = findings) and e
 ### Active-thread detection
 A branch/feature appearing across multiple sessions in the window (e.g. `feature/checkout-retry`,
 `fix/gateway-timeout`) is an **active thread** — one refreshed entry in `dream-active-work`
-with title, repo/branch, goal, status, next/open, key files, `last_touched`.
+with title, repo/branch, goal, status, next/open, key files, `last_touched`. (The sharder groups a
+thread's sessions into the same shard, so one MAP sub-agent sees the whole thread at once.)
 
-## Phase 2 — Register in the ledger
-All candidates (including drops) are upserted via `ledger.py upsert`. Repeats bump `hit_count` /
-`distinct_days`. This is where cross-night memory accumulates.
+## Phase 2 — REDUCE / Register  (orchestrator + reduce.py)
+`reduce.py merge` concatenates every `claims-NN.json`, dedups by fingerprint, and **conservatively
+resolves cross-shard disagreement** (a claim two shards score differently is never auto-elevated to
+long/high — it is demoted toward active-work or review). The merged `candidates.json` is upserted via
+`ledger.py upsert` (all candidates, including drops; repeats bump `hit_count` / `distinct_days` — this is
+where cross-night memory accumulates). Then `reduce.py plan` builds `apply-plan.json`: the per-skill APPLY
+buckets, the active-work add/remove lists, the review-queue, and the drop count — folding in ledger
+`promotions` and `decays` (see Phase 4).
 
-## Phase 3 — Consolidate (apply), in precedence order
-1. **SHORT → `dream-active-work`** — add/refresh active threads; remove decayed ones (Phase 4).
-2. **LONG + high → reference skill** — in-place edit (refine existing entry if present; else slot under the
-   best section). Dedup against current content first. Preserve the file's tone/tables/headers.
-3. **LONG + med/low → review-queue** — write a proposal file (file, section, before/after) for approval;
-   do **not** edit the skill.
-4. **repo-memory** — repo-specific coding patterns are recorded in the journal's "for next in-repo session"
-   section for the per-repo `.github/agent-history/_shared.md` (the Dream runs outside repos, so it records
-   rather than commits).
-5. **New skill needed?** Not auto-created. A `review-queue` proposal describes the new skill (name — no prefix
-   if cross-repo, else a short repo-id prefix per your naming rule — description, outline).
+## Phase 3 — APPLY  (one sub-agent per target, in parallel)
+From `apply-plan.json` the orchestrator launches one editor sub-agent per bucket (each edits a different
+file, so parallel is safe):
+1. **per reference skill** (`by_skill`) — LONG + high-confidence claims. In-place edit: refine an existing
+   entry if present, else slot under the best section; dedup first; preserve tone/tables/headers; a
+   `promoted` claim is phrased as a now-durable fact. Also reconciles any same-day review-queue proposal
+   for that skill (applies high-confidence ones, deletes the consumed file).
+2. **`dream-active-work`** — adds/refreshes active threads and removes decayed ones. Kept a tight snapshot.
+3. **review-queue** — writes a proposal (file, section, before/after; or a new-skill name+outline) for
+   every LONG med/low-confidence, unroutable, or new-area item. Does **not** edit a skill.
 
-Each applied/queued item is marked via `ledger.py set-status`.
+New skills are never auto-created — they arrive as a review-queue proposal you approve. `repo-memory` (repo-
+specific coding patterns) is recorded in the journal's "for next in-repo session" section, not a personal
+skill (the Dream runs outside repos, so it records rather than commits).
 
-## Phase 4 — Decay & Promote
-- `ledger.py promotions` → genuinely-durable recurring shorts are promoted to their LONG target (high) or
-  queued (med/low). This is how short-term facts *earn* long-term status.
-- `ledger.py decays` → stale active shorts are removed from `dream-active-work` and marked `archived`
-  (after any durable lesson is promoted). Keeps active context small.
+## Phase 4 — Decay & Promote  (computed in REDUCE, executed in APPLY + status)
+- **Promotion** — `ledger.py promotions` surfaces recurring shorts (≥ `promote_hit_count` over ≥
+  `promote_distinct_days` distinct days); `reduce.py plan` routes each to its LONG target (applied by the
+  Phase-3 skill sub-agent) or to the review-queue. This is how short-term facts *earn* long-term status.
+- **Decay** — `ledger.py decays` surfaces stale active shorts; the active-work sub-agent removes them from
+  `dream-active-work` and they are marked `archived`. Keeps active context small.
+Finally the orchestrator marks each fingerprint via `ledger.py set-status` (applied / proposed / archived),
+using the fingerprints already in `apply-plan.json`.
 
-## Phase 5 — Journal + record run
-`journal/<YYYY-MM-DD>.md` contains: a summary line (harvested/dropped/updated/edited/promoted/decayed/queued),
-applied changes per skill, the current active-work snapshot, review-queue links, repo-memory notes for next
-in-repo session, and an audit sample of what was dropped and why. Then a run record via `ledger.py record-run`.
+## Phase 5 — Journal + record run  (orchestrator)
+`journal/<YYYY-MM-DD>.md` is written from the compact plan + one-line sub-agent summaries (never raw
+sessions): a summary line (harvested/shards/dropped/active±/edited/promoted/queued), applied changes per
+skill, the current active-work snapshot, review-queue links, repo-memory notes for the next in-repo
+session, and an audit sample of what was dropped and why. Then a run record via `ledger.py record-run`.
 
 ## Guardrails
 - Never write secrets/tokens/PII — even if present in a session.
@@ -78,7 +97,9 @@ in-repo session, and an audit sample of what was dropped and why. Then a run rec
 - Partial > none: if a source errors, continue with the rest.
 
 ## Worked example (illustrative)
-Imagine a fictional service **acme-api** and a day of harvested signals:
+Imagine a fictional service **acme-api** and a day of harvested signals. In a real run these are spread
+across shards and classified by parallel MAP sub-agents, then merged by `reduce.py` — the classification
+below is what matters:
 
 | Raw signal | Classification | Destination |
 |---|---|---|

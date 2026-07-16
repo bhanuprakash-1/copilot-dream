@@ -18,7 +18,7 @@ param(
   [ValidateSet('claude-opus-4.8','gpt-5.6-sol')]
   [string]$Model = 'claude-opus-4.8',
   [double]$Hours = 0,                 # 0 = auto (watermark-based)
-  [int]$TimeoutMinutes = 45,          # kill + verify-by-artifact if the model run exceeds this
+  [int]$TimeoutMinutes = 60,          # kill + verify-by-artifact if the model run exceeds this
   [switch]$SkipHarvest,
   [switch]$ProposeOnly,
   [switch]$DryRun
@@ -43,6 +43,8 @@ try {
   Get-ChildItem $harvest -Filter 'harvest-*.*' -EA SilentlyContinue | Sort-Object LastWriteTime -Desc | Select-Object -Skip 40 | Remove-Item -Force -EA SilentlyContinue
   Get-ChildItem $logsDir -Filter 'dream-*.out.txt' -EA SilentlyContinue | Sort-Object LastWriteTime -Desc | Select-Object -Skip 40 | Remove-Item -Force -EA SilentlyContinue
   Get-ChildItem $logsDir -Filter 'run-*.log' -EA SilentlyContinue | Sort-Object LastWriteTime -Desc | Select-Object -Skip 30 | Remove-Item -Force -EA SilentlyContinue
+  # map-reduce scratch: keep the last 10 nightly shard dirs (each holds shards + claims + candidates + apply-plan)
+  Get-ChildItem (Join-Path $harvest 'shards') -Directory -EA SilentlyContinue | Sort-Object LastWriteTime -Desc | Select-Object -Skip 10 | Remove-Item -Recurse -Force -EA SilentlyContinue
 } catch {}
 
 Log "DREAM start model=$Model dryrun=$DryRun host=$env:COMPUTERNAME"
@@ -71,20 +73,28 @@ $safeMode = ""
 if ($ProposeOnly) {
   $safeMode = @"
 
-SAFE MODE (propose-only): Do NOT edit any reference skill or dream-active-work in place. Route EVERY
-proposed change - including short-term/active-work updates - to the review-queue as proposal files.
-Still register items in the ledger and still write the journal. This is a review-only run.
+SAFE MODE (propose-only): Do NOT edit any reference skill or dream-active-work in place. In the APPLY
+phase, SKIP the per-skill and active-work editor sub-agents; instead route EVERY change - including
+short-term/active-work updates and promotions - through the review-queue sub-agent as proposal files.
+Still shard, still run the MAP classifiers, still merge + upsert to the ledger, and still write the
+journal. This is a review-only run.
 "@
 }
 $bootstrap = @"
 You are running the nightly DREAM consolidation (unattended, autonomous, no questions).
-Follow the instructions in this file EXACTLY and execute every phase:
+Run as a LEAN MAP-REDUCE ORCHESTRATOR: shard the harvest, fan out parallel classifier sub-agents (MAP),
+merge their compact JSON (REDUCE), fan out parallel per-skill editor sub-agents (APPLY), then journal.
+Do NOT read raw session transcripts or full skill bodies into your own context - keep it lean and push
+all heavy reading/editing into sub-agents. Follow the instructions in this file EXACTLY, every phase:
   $promptFp
 Inputs:
   - config:  $config
-  - harvest: $harvest\latest.json  (read the JSON it points to)
+  - harvest: $harvest\latest.json  (the sharder reads it; you read the shard manifest, not the bodies)
+  - shard:   python $engine\shard.py --config $config
+  - reduce:  python $engine\reduce.py --config $config <merge|plan> ...
   - ledger:  python $engine\ledger.py <subcommand>
-Model policy: you must be on $Model at long_context/max. Write the journal for $today and record the run.$safeMode
+Model policy: you must be on $Model at long_context/max, and spawn every sub-agent on $Model too.
+Write the journal for $today and record the run.$safeMode
 "@
 
 $cliArgs = @(
@@ -132,8 +142,8 @@ while ($true) {
   if ($job.State -ne 'Running') { $code = (Receive-Job $job); Log "copilot job state=$($job.State) exit=$code"; break }
   $journalFresh = (Test-Path $journalToday) -and ((Get-Item $journalToday).LastWriteTime -gt $runStart)
   if ($journalFresh -and -not $graceDeadline) {
-    $graceDeadline = (Get-Date).AddSeconds(120)
-    Log "success artifact detected (journal $today.md written); allowing up to 120s grace for record-run/teardown"
+    $graceDeadline = (Get-Date).AddSeconds(180)
+    Log "success artifact detected (journal $today.md written); allowing up to 180s grace for record-run/teardown"
   }
   if ($graceDeadline -and (Get-Date) -gt $graceDeadline) { Log "grace elapsed; proceeding (teardown still running)"; $stuckTeardown=$true; break }
   if ((Get-Date) -gt $deadline) { Log "TIMEOUT after ${TimeoutMinutes}m; will verify by artifact"; $stuckTeardown=$true; break }

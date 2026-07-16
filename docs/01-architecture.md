@@ -8,6 +8,7 @@
 5. **Reusable everywhere** — the outputs are skills, readable by Copilot CLI *and* VS Code Copilot Chat.
 6. **Extensible** — new input sources (VS Code chat, pull-request history, chat/email) plug in without redesign.
 7. **Reviewable** — you review and correct; the system respects your edits.
+8. **High-quality synthesis** — parallel, fresh-context sub-agents do the classification and editing, so no single agent degrades while wading through a whole heavy day.
 
 ## Control flow
 
@@ -28,14 +29,16 @@ flowchart TD
       HARVEST --> SNAP["harvest/latest.json<br/>+ .md digest"]
     end
 
-    SNAP --> BRAIN
+    SNAP --> SHARD["shard.py<br/>balanced, thread-grouped shards"]
     RUN -->|copilot -p, opus-4.8/gpt-5.6-sol<br/>long_context + max| BRAIN
 
-    subgraph Brain["Layers 2-5 — Consolidation (the model)"]
-      BRAIN["dream-consolidation.prompt.md"]
-      BRAIN --> CLASS["Layer 2 — Classify<br/>importance / horizon / domain / confidence"]
-      CLASS --> LEDGER[(ledger.db<br/>item registry)]
-      LEDGER --> CONS["Layer 3 — Consolidate<br/>edit target skills in place"]
+    subgraph Brain["Layers 2-5 — Consolidation (lean orchestrator + parallel sub-agents)"]
+      BRAIN["dream-consolidation.prompt.md<br/>(lean orchestrator)"]
+      SHARD --> MAP["Layer 2 — MAP (parallel sub-agents)<br/>classify: importance / horizon / domain / confidence"]
+      BRAIN -.orchestrates.-> MAP
+      MAP --> REDUCE["reduce.py<br/>merge + dedup + plan"]
+      REDUCE --> LEDGER[(ledger.db<br/>item registry)]
+      LEDGER --> CONS["Layer 3 — APPLY (parallel sub-agents)<br/>edit each target skill in place"]
       LEDGER --> DECAY["Layer 4 — Decay & Promote"]
       CONS --> JOURNAL["Layer 5 — Journal + Review queue"]
       DECAY --> JOURNAL
@@ -71,9 +74,39 @@ properties a stateless pass can't have:
 | **Noise** (one-off bug, machine chatter, off-domain personal, automation transcripts) | *dropped* | never written |
 
 ### Model policy
-Only `claude-opus-4.8` or `gpt-5.6-sol`, both `--context long_context` (1M) `--effort max`. The 1M window
-lets the Dream hold a full day of sessions + all target skills at once; max reasoning is worth it for the
-judgment-heavy classification. `run-dream.ps1` refuses any other model (PowerShell `ValidateSet`).
+Only `claude-opus-4.8` or `gpt-5.6-sol`, both `--context long_context` (1M) `--effort max` — and every
+sub-agent runs on that same model. The 1M window is the ceiling, not the operating point: the map-reduce
+structure below keeps each agent working in a small, clean slice of it. Max reasoning is worth it for the
+judgment-heavy classification and in-place editing. `run-dream.ps1` refuses any other model (PowerShell
+`ValidateSet`); `config.model_policy` is the single source of truth for the allowed set.
+
+### Map-reduce execution model (why parallel sub-agents)
+A 1M context window is necessary but not sufficient. In practice an agent's output quality starts to
+degrade well before the window is full — often around a third of it — as reasoning, tool output, and
+partial edits accumulate. A single agent asked to read a whole heavy day *and* edit every skill would
+spend its best tokens early and drift later. So the nightly run is a **lean map-reduce orchestrator**,
+not a monolithic reader:
+
+| Step | Who | Context it holds |
+|---|---|---|
+| **Shard** | `shard.py` (deterministic) | splits the harvest into balanced, thread-grouped shards (`map_reduce.target_tokens` each, ≤ `max_shards`) |
+| **MAP** | one classifier **sub-agent per shard**, in parallel | only its own shard + the rubric |
+| **REDUCE** | `reduce.py` (deterministic) + the orchestrator | compact JSON only (candidates, apply-plan) |
+| **APPLY** | one editor **sub-agent per target skill**, in parallel (≤ `apply_max_parallel`) | only that one skill + its routed claims |
+| **Journal** | the orchestrator | compact plan + one-line sub-agent summaries |
+
+Two properties fall out of this:
+- **The orchestrator stays lean.** It never reads a raw session transcript or a full skill body — only
+  manifests, compact JSON, and one-line summaries. Its own context stays far below the degradation zone
+  all night, even on a 300K-token day.
+- **Every unit of judgment gets a fresh window.** Each shard is classified, and each skill edited, by an
+  ephemeral sub-agent that starts clean. There is nothing to compact, because no sub-agent lives long
+  enough to fill up. Threads are grouped so one classifier sees a whole feature/branch at once.
+
+`shard.py` and `reduce.py` are deterministic code for the same reason `harvest.py` is: partitioning,
+fingerprint-dedup, and routing are bookkeeping, not judgment — doing them in code keeps them reproducible
+and keeps the orchestrator's context tiny. Set `map_reduce.enabled = false` to fall back to the classic
+single-agent pass on light days.
 
 ## Prior art / inspiration
 This design borrows two well-known ideas:

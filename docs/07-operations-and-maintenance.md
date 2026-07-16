@@ -51,7 +51,7 @@ fine; both trigger options need this), (c) `copilot` **authenticated**, (d) the 
 | RED: "no nightly trigger found" | task got removed | re-register: `triggers\install-scheduled-task.ps1` |
 | WARN: Task 'CopilotDream' Disabled | someone disabled it | `Enable-ScheduledTask -TaskName CopilotDream` |
 | WARN: last Task result non-zero / RED last run failed | run errored | read `logs\run-<date>.log` + newest `logs\dream-*-*.out.txt`; common: copilot auth expired -> run `copilot` once interactively to re-auth |
-| Runner "hangs" after the journal is written | a copilot subagent/MCP process is slow to tear down | **handled automatically**: the runner judges success by the journal artifact, waits a 120 s grace for record-keeping, then force-kills only the stuck children and advances the watermark. Bounded by `-TimeoutMinutes` (default 45). Nothing for you to do. |
+| Runner "hangs" after the journal is written | a copilot subagent/MCP process is slow to tear down | **handled automatically**: the runner judges success by the journal artifact, waits a 180 s grace for record-keeping, then force-kills only the stuck children and advances the watermark. Bounded by `-TimeoutMinutes` (default 60). Nothing for you to do. |
 | Journal says harvest = 0 sessions | you didn't use Copilot that day | normal; the Dream still writes a short journal |
 
 ### Health-check the trigger directly

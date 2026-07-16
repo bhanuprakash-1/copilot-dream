@@ -19,6 +19,13 @@
     "max_hours": 72,
     "note": "Harvest window = now - min(hours since last successful run, max_hours), floored at default_hours on first run."
   },
+  "map_reduce": {
+    "enabled": true,
+    "target_tokens": 120000,
+    "max_shards": 6,
+    "apply_max_parallel": 6,
+    "note": "The nightly Dream runs as map-reduce for quality (quality degrades long before a single agent fills a 1M context). shard.py splits the harvest into <=max_shards balanced shards (~target_tokens each, threads never split); one parallel classifier sub-agent per shard (MAP); reduce.py merges+dedups (REDUCE); one parallel sub-agent per target skill applies edits (APPLY), capped at apply_max_parallel. The orchestrator stays lean - it holds only compact JSON, never raw session or skill bodies - so every sub-agent works in a fresh high-quality context and no compaction is needed. Set enabled=false to fall back to a single-agent pass on light days."
+  },
   "sources": {
     "cli_sessions": {
       "enabled": true,

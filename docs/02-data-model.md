@@ -16,6 +16,40 @@ Output: `harvest/harvest-<stamp>.json` (machine) + `.md` (human) + `harvest/late
 `window.default_hours` (30) and capped at `window.max_hours` (72). First run uses 30h. The watermark only
 advances on a **successful** consolidation, so a failed night is retried (safely — the ledger dedups).
 
+## Map-reduce artifacts (shard.py / reduce.py)
+The consolidation runs as map-reduce (see [01-architecture](01-architecture.md)). Two deterministic
+scripts create the intermediate files the orchestrator and its sub-agents hand off through. All of them
+live in a per-run scratch dir `harvest/shards/<stamp>/` (stable pointer: `harvest/shards/latest.json`).
+
+### shard.py — split the harvest for parallel classification
+`python shard.py --config config.json` reads the harvest snapshot and writes:
+| File | What |
+|---|---|
+| `shard-NN.json` | a mini-snapshot (a subset of sessions, or all git commits) that one MAP sub-agent reads. Sessions are grouped by `(repository, branch)` so a thread never splits across shards; groups are bin-packed to ~`map_reduce.target_tokens` each, capped at `map_reduce.max_shards`; git commits get their own shard. |
+| `manifest.json` | the compact index the **orchestrator** reads (never the shard bodies): per shard — file, kind, session/commit counts, est_tokens, branches. |
+
+### reduce.py — merge the MAP outputs and build the work order
+- `python reduce.py --config config.json merge --in <shard_dir> --out candidates.json`
+  concatenates every `claims-NN.json` (what the MAP sub-agents write), dedups by the same fingerprint the
+  ledger uses, and **conservatively resolves cross-shard disagreement** — a claim two shards score
+  differently is never auto-elevated to long/high; it is demoted toward active-work or review.
+- `python reduce.py --config config.json plan --candidates candidates.json --out apply-plan.json`
+  routes every candidate into the work order the APPLY phase consumes:
+
+  | Bucket | Rule |
+  |---|---|
+  | `by_skill[<name>]` | `horizon=long` + `confidence=high` + `target` is a known reference skill → one APPLY sub-agent per skill |
+  | `active_work.add` | `horizon=short` (or `target=dream-active-work`) |
+  | `active_work.remove_decayed` | from `ledger.py decays` |
+  | `review_queue` | `long` + med/low confidence, unroutable targets, or (importance ≥ 7) new-skill proposals |
+  | `drops_count` | `horizon=drop` (already recorded by the upsert) |
+
+  `plan` also folds in `ledger.py promotions` (recurring shorts that earned long-term status).
+
+All of `shard-NN.json`, `claims-NN.json`, `candidates.json`, `apply-plan.json`, and `manifest.json` are
+scratch — git-ignored, retained for the last ~10 nights by `run-dream.ps1`, and fully reproducible from
+the harvest snapshot.
+
 ## Ledger schema (ledger.db)
 
 ### Table `items` — one row per durable candidate

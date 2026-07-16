@@ -5,7 +5,7 @@ it. To adopt it, copy the engine, genericize identity/paths for your machine, an
 
 ## What to copy
 ```
-~/.copilot/dream/                     # engine (config, harvest.py, ledger.py, prompt, runner, triggers)
+~/.copilot/dream/                     # engine (config, harvest.py, shard.py, reduce.py, ledger.py, prompt, runner, triggers)
 ~/.copilot/skills/dream/              # index skill
 ~/.copilot/skills/dream-active-work/  # short-term skill
 docs/                                 # these docs (optional)

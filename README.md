@@ -40,11 +40,12 @@ flowchart LR
       S3[inbox notes] --> HV
     end
     HV --> SN[harvest snapshot]
-    SN --> BRAIN
-    subgraph C["2–5 · Consolidate (the model @ 1M ctx / max)"]
-      BRAIN[dream-consolidation.prompt] --> CL[2 · Classify<br/>importance × horizon]
-      CL --> LG[(ledger.db<br/>item registry)]
-      LG --> AP[3 · Apply in place]
+    SN --> SH[shard.py<br/>balanced, thread-grouped shards]
+    subgraph C["2–5 · Consolidate (lean orchestrator + parallel sub-agents @ 1M ctx / max)"]
+      SH --> MAP[2 · MAP<br/>parallel classifier sub-agents<br/>importance × horizon]
+      MAP --> RD[reduce.py<br/>merge + dedup + plan]
+      RD --> LG[(ledger.db<br/>item registry)]
+      LG --> AP[3 · APPLY<br/>parallel per-skill sub-agents<br/>edit in place]
       LG --> DP[4 · Decay & Promote]
       AP --> JR[5 · Journal + Review queue]
       DP --> JR
@@ -54,15 +55,16 @@ flowchart LR
     AP -->|uncertain| RQ[review-queue]
 ```
 
-1. **Harvest** — deterministic Python collects the day's sessions + git commits + inbox notes into a compact snapshot.
-2. **Classify** — each candidate gets `importance 1–10`, `horizon {long | short | drop}`, `domain`, `confidence`, `target`.
-3. **Consolidate** — the model edits your target skills **in place** (dedup, never blind-append).
+1. **Harvest** — deterministic Python collects the day's sessions + git commits + inbox notes into a compact snapshot, then `shard.py` splits it into balanced, thread-grouped shards.
+2. **Classify (MAP)** — **parallel classifier sub-agents** (one per shard) score each candidate: `importance 1–10`, `horizon {long | short | drop}`, `domain`, `confidence`, `target`. `reduce.py` merges + dedups their output.
+3. **Consolidate (APPLY)** — **parallel per-skill sub-agents** edit your target skills **in place** (dedup, never blind-append).
 4. **Decay & Promote** — recurring short-term facts graduate to long-term; stale ones are archived out.
 5. **Journal + Review** — a dated journal + a review queue you skim in ~2 minutes.
 
-**Two things make it work well** (details in [docs/](docs/)):
+**Three things make it work well** (details in [docs/](docs/)):
 - **A fingerprinted ledger** → idempotence (no double-apply), **promotion** (a fact seen on ≥3 distinct days *earns* long-term status), and **decay** (in-flight items untouched for ~14 days are archived). This is the anti-pollution core.
 - **A thin, always-on index skill** (`dream`) that only *routes*; detail lives in skills loaded **on demand**. So the always-relevant context footprint stays tiny.
+- **A lean map-reduce orchestrator** → the nightly run fans work out to ephemeral, fresh-context sub-agents (one per shard to classify, one per skill to edit) and itself only ever holds compact JSON — never a full day of raw sessions. Quality stays high because no single agent has to wade through a heavy day, the known failure mode where agents degrade well before filling their context window.
 
 ---
 
@@ -130,7 +132,7 @@ powershell -File $env:USERPROFILE\.copilot\dream\dream-note.ps1 "track the acme-
 
 | Path | What |
 |---|---|
-| `engine/` | The system: `harvest.py`, `ledger.py`, `run-dream.ps1`, `dream-status.ps1`, `dream-note.ps1`, `dream-consolidation.prompt.md`, `config.example.json`, `triggers/`. |
+| `engine/` | The system: `harvest.py`, `shard.py`, `reduce.py`, `ledger.py`, `run-dream.ps1`, `dream-status.ps1`, `dream-note.ps1`, `dream-consolidation.prompt.md`, `config.example.json`, `triggers/`. |
 | `skills/` | Template skills installed for you: `dream` (thin index/router) + `dream-active-work` (short-term). |
 | `install/install.ps1` | Idempotent bootstrap into `~/.copilot`. |
 | `examples/` | A filled example config + a synthetic journal showing the output. |
@@ -139,10 +141,11 @@ powershell -File $env:USERPROFILE\.copilot\dream\dream-note.ps1 "track the acme-
 ## Configuration & model
 
 Everything tunable lives in `engine/config.example.json` (copied to `~/.copilot/dream/config.json`): identity,
-harvest sources + repo roots, domain keywords, the reference skills to feed, and thresholds (promotion,
-decay, auto-apply confidence). The runner defaults to a long-context, high-reasoning model
-(`claude-opus-4.8` or `gpt-5.6-sol`, at 1M context / max effort) — change the allowed set in
-`run-dream.ps1` and `config.json` if you prefer another.
+harvest sources + repo roots, domain keywords, the reference skills to feed, thresholds (promotion,
+decay, auto-apply confidence), and the `map_reduce` parallelism caps (shard size, max shards, max parallel
+applies). The runner defaults to a long-context, high-reasoning model (`claude-opus-4.8` or `gpt-5.6-sol`,
+at 1M context / max effort) — change the allowed set in `run-dream.ps1` and `config.json` if you prefer
+another.
 
 ## Docs
 
