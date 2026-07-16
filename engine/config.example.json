@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "description": "Configuration for the nightly Dream consolidation. Edit paths/thresholds here; harvest.py, ledger.py, run-dream.ps1 and the dream prompt all read this file. Copy this file to config.json and fill in your own values.",
+  "identity": {
+    "alias": "<your-alias>",
+    "git_emails": ["you@example.com"],
+    "git_names": ["Your Name"],
+    "_comment": "Used to attribute git commits to you. List every email/name you author commits under."
+  },
+  "model_policy": {
+    "allowed": ["claude-opus-4.8", "gpt-5.6-sol"],
+    "default": "claude-opus-4.8",
+    "context": "long_context",
+    "effort": "max",
+    "note": "Configurable. Set 'allowed'/'default' to whichever models your Copilot CLI supports; run-dream.ps1's -Model ValidateSet must match. By default both run at 1M context (long_context) with max reasoning."
+  },
+  "window": {
+    "default_hours": 30,
+    "max_hours": 72,
+    "note": "Harvest window = now - min(hours since last successful run, max_hours), floored at default_hours on first run."
+  },
+  "sources": {
+    "cli_sessions": {
+      "enabled": true,
+      "db": "~/.copilot/session-store.db",
+      "assistant_truncate_chars": 1600,
+      "user_truncate_chars": 4000,
+      "skip_empty_sessions": true,
+      "exclude_cwd_substrings": ["\\.copilot\\dream", "/.copilot/dream"]
+    },
+    "git_commits": {
+      "enabled": true,
+      "_comment": "EDIT THIS: point roots_glob at the parent folders that contain your git repos. Each glob is expanded, and any matched subfolder containing a .git dir is scanned for your commits.",
+      "roots_glob": [
+        "D:/src/*",
+        "D:/src/*/*"
+      ]
+    },
+    "inbox": {
+      "enabled": true,
+      "path": "~/.copilot/dream/inbox.md"
+    }
+  },
+  "domain": {
+    "relevant_keywords": [
+      "service", "api", "deploy", "infra", "test", "networking", "database"
+    ],
+    "off_domain_note": "Off-domain personal projects and machine-maintenance chatter are DROPPED from your reference skills. Keep an item only if it reveals a durable, reusable dev-workflow lesson."
+  },
+  "targets": {
+    "_comment": "Replace long_term_skills with YOUR durable reference skills (the long-term routing targets). The names/paths below are generic placeholders - add or remove entries freely.",
+    "long_term_skills": {
+      "service-architecture": "~/.copilot/skills/service-architecture/SKILL.md",
+      "deployment-runbook": "~/.copilot/skills/deployment-runbook/SKILL.md",
+      "telemetry-queries": "~/.copilot/skills/telemetry-queries/SKILL.md",
+      "team-conventions": "~/.copilot/skills/team-conventions/SKILL.md"
+    },
+    "short_term_skill": "~/.copilot/skills/dream-active-work/SKILL.md",
+    "index_skill": "~/.copilot/skills/dream/SKILL.md",
+    "agent_memory": {
+      "protocol_skill": "~/.copilot/skills/repo-agent-history/SKILL.md",
+      "note": "Optional. Repo-specific coding patterns go to per-repo .github/agent-history/*.md via a per-repo history protocol, NOT to personal skills. Remove this block if you do not use one."
+    },
+    "durable_filter_skill": "~/.copilot/skills/durable-filter/SKILL.md",
+    "durable_filter_note": "Optional. A skill describing your durable-vs-transient KEEP/DROP filter. Leave the path pointing at a non-existent skill (or remove) if you do not have one."
+  },
+  "thresholds": {
+    "promote_hit_count": 3,
+    "promote_distinct_days": 3,
+    "decay_days": 14,
+    "auto_apply_min_confidence": "high",
+    "importance_keep_floor": 4,
+    "note": "SHORT items with hit_count>=promote_hit_count over >=promote_distinct_days distinct days are promotion candidates. Active SHORT items untouched for decay_days are archived. Only HIGH-confidence LONG items auto-apply; others go to review-queue. Items with importance < importance_keep_floor are dropped unless part of an active thread."
+  },
+  "paths": {
+    "engine": "~/.copilot/dream",
+    "harvest_dir": "~/.copilot/dream/harvest",
+    "journal_dir": "~/.copilot/dream/journal",
+    "review_queue_dir": "~/.copilot/dream/review-queue",
+    "logs_dir": "~/.copilot/dream/logs",
+    "ledger_db": "~/.copilot/dream/ledger.db",
+    "state_file": "~/.copilot/dream/state.json",
+    "prompt_file": "~/.copilot/dream/dream-consolidation.prompt.md"
+  }
+}

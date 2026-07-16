@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────────────────────
+# Copilot Dream — ignore personal config & runtime state.
+# The repo ships TEMPLATES (config.example.json, inbox.example.md).
+# Your real config and everything the Dream generates stays local.
+# ─────────────────────────────────────────────────────────────
+
+# Local config (create from engine/config.example.json)
+config.json
+**/config.json
+
+# Ledger, watermark, and generated artifacts (wherever they land)
+ledger.db
+ledger.db-*
+state.json
+journal/
+review-queue/
+harvest/
+logs/
+inbox.md
+
+# Guard the same paths under engine/ in case someone runs in-tree
+engine/ledger.db
+engine/state.json
+engine/journal/
+engine/review-queue/
+engine/harvest/
+engine/logs/
+engine/inbox.md
+
+# Packaging staging (never commit)
+_src/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.vs/
+.idea/

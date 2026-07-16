@@ -1,0 +1,92 @@
+# 05 — Install & Schedule
+
+## Prerequisites
+- Copilot CLI on PATH (`copilot` / `copilot.exe`), authenticated (OAuth token stored in `~/.copilot`).
+- Python 3 on PATH (stdlib only — no pip installs).
+- Sleep disabled overnight (`powercfg` AC/DC standby = 0) so the machine is awake at ~04:15.
+- The session stays **logged on but idle** overnight, so your mapped drives, repo roots, and Copilot auth
+  are available to the run.
+
+> **Platform note:** Windows + PowerShell is the primary target — the runner (`run-dream.ps1`), health check
+> (`dream-status.ps1`), and scheduling use PowerShell and Windows Task Scheduler. The harvest and ledger
+> (`harvest.py`, `ledger.py`) are stdlib-only Python and run cross-platform, so porting to a `cron`/shell
+> trigger on macOS/Linux is mostly a matter of replacing the two `.ps1` wrappers.
+
+## The headless command (what actually runs)
+```
+copilot -p "<bootstrap that points at dream-consolidation.prompt.md>" `
+  --model claude-opus-4.8 `      # or gpt-5.6-sol — ONLY these two
+  --context long_context `        # 1,000,000-token tier
+  --effort max `                  # max reasoning
+  --allow-all-tools --allow-all-paths --no-ask-user `
+  --add-dir <your-repo-root> --add-dir %USERPROFILE% `
+  --log-dir <dream>\logs -C <dream>
+```
+`run-dream.ps1` builds this, after first running `harvest.py`. It **refuses any model except the two allowed**
+(PowerShell `ValidateSet`) and passes `long_context` + `max` unconditionally.
+
+### Model flags reference
+| Want | Flag |
+|---|---|
+| Claude Opus 4.8 | `--model claude-opus-4.8` |
+| GPT-5.6 Sol | `--model gpt-5.6-sol` |
+| 1M context | `--context long_context` |
+| Max reasoning | `--effort max` |
+| Non-interactive | `-p "<prompt>"` + `--allow-all-tools` + `--no-ask-user` |
+
+## Option A — Windows Task Scheduler (recommended, portable)
+No third-party dependency; runs in your logged-on session so mapped drives + auth work.
+```powershell
+# register (04:15 daily, runs only when logged on)
+powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\.copilot\dream\triggers\install-scheduled-task.ps1
+
+# with GPT-5.6 Sol instead
+... install-scheduled-task.ps1 -Model gpt-5.6-sol
+
+# test immediately
+Start-ScheduledTask -TaskName CopilotDream
+Get-ScheduledTaskInfo -TaskName CopilotDream
+
+# remove
+... install-scheduled-task.ps1 -Unregister
+```
+This registers "run only when logged on" (no stored password; shares your interactive session). Use
+`-RunWhenLoggedOff` only if you truly sign out overnight — but note mapped network drives may be absent in
+session 0; the core sessions→skills path still works because those live under `%USERPROFILE%`.
+
+## Option B — Desktop automation app (optional)
+Some people drive the nightly run from a desktop automation/scheduler app that can also post a morning chat
+digest. This is an optional convenience the author uses — adapt it to whatever scheduler you prefer:
+
+1. Point a scheduled shell step at `powershell -File %USERPROFILE%\.copilot\dream\run-dream.ps1 -Model claude-opus-4.8` and let it wait.
+2. (Optional) add a second step that reads today's `journal/<date>.md` and sends you a digest (+ review-queue
+   links) over your chat channel (Teams, Slack, email, …).
+
+> To switch the heavy model to GPT-5.6 Sol, change `-Model gpt-5.6-sol` in the shell step.
+
+## Verifying a run
+```powershell
+# what the next run would harvest, no model spend
+...\run-dream.ps1 -DryRun
+
+# a real run now (foreground, ~10-30 min)
+...\run-dream.ps1 -Model claude-opus-4.8
+
+# afterwards
+python ...\ledger.py stats
+Get-Content ...\dream\journal\<today>.md
+Get-ChildItem ...\dream\review-queue\
+Get-Content ...\dream\logs\run-<today>.log -Tail 40
+```
+
+## Cost / runtime notes
+- One run reads a day of sessions + all target skills in a single 1M-context pass at max effort — expect
+  meaningful AI-credit use per night. Tune by: shortening the window, lowering `--effort` for light days, or
+  running every other night. The harvest itself is free (local Python).
+- `run-dream.ps1` advances the watermark **only on success**, so a failed/cancelled night is safely retried.
+
+## Tuning knobs (config.json)
+- `window.default_hours` / `max_hours` — how much history each run considers.
+- `thresholds.*` — promotion (hit_count/distinct_days), decay_days, auto-apply confidence, importance floor.
+- `sources.*` — enable/disable sources, add repo roots, truncation sizes.
+- `domain.relevant_keywords` — bias the classifier's domain-relevance.
