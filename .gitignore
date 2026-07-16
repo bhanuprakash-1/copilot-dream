@@ -30,6 +30,10 @@ engine/inbox.md
 # Packaging staging (never commit)
 _src/
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
