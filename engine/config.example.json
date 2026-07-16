@@ -30,11 +30,12 @@
     },
     "git_commits": {
       "enabled": true,
-      "_comment": "EDIT THIS: point roots_glob at the parent folders that contain your git repos. Each glob is expanded, and any matched subfolder containing a .git dir is scanned for your commits.",
+      "_comment": "EDIT THIS: point roots_glob at the parent folders that contain your git repos. Each glob is expanded, and any matched subfolder containing a .git dir is scanned for your commits. Use roots_exclude to skip repos the globs would otherwise match (each entry is matched as a glob AND as a case-insensitive substring against the repo's full path) - e.g. a personal side-project.",
       "roots_glob": [
         "D:/src/*",
         "D:/src/*/*"
-      ]
+      ],
+      "roots_exclude": ["*personal-side-project*"]
     },
     "inbox": {
       "enabled": true,

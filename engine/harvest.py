@@ -13,7 +13,7 @@ re-query anything to get the raw material (though it may, for depth).
 
 stdlib only. Windows-friendly. Never fails the whole run on a single bad source.
 """
-import argparse, glob, json, os, re, sqlite3, subprocess, sys
+import argparse, fnmatch, glob, json, os, re, sqlite3, subprocess, sys
 from datetime import datetime, timedelta, timezone
 
 def expand(p): return os.path.expanduser(p)
@@ -104,11 +104,19 @@ def git(root, args):
         return ""
 
 def find_git_roots(cfg):
+    gc = cfg["sources"]["git_commits"]
+    excl = gc.get("roots_exclude", [])
+    def excluded(ap):
+        return any(fnmatch.fnmatch(ap, e) or e.lower() in ap.lower() for e in excl)
     roots = set()
-    for pat in cfg["sources"]["git_commits"]["roots_glob"]:
+    for pat in gc["roots_glob"]:
         for p in glob.glob(pat):
-            if os.path.isdir(os.path.join(p, ".git")):
-                roots.add(os.path.abspath(p))
+            if not os.path.isdir(os.path.join(p, ".git")):
+                continue
+            ap = os.path.abspath(p)
+            if excluded(ap):
+                continue
+            roots.add(ap)
     return sorted(roots)
 
 def harvest_git(cfg, since):
