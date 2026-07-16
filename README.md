@@ -82,7 +82,7 @@ flowchart LR
 
 ```powershell
 # 1. clone
-git clone https://github.com/<you>/copilot-dream.git
+git clone https://github.com/bhanuprakash-1/copilot-dream.git
 cd copilot-dream
 
 # 2. install into ~/.copilot (copies engine + skill templates, inits the ledger, creates your config)
