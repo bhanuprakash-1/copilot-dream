@@ -95,7 +95,8 @@ Collect the one-line summaries. Do NOT read the claims files yourself - the redu
    recurrence accumulates across nights).
 3. `python reduce.py --config <config> plan --candidates <shard_dir>/candidates.json --out <shard_dir>/apply-plan.json`
    (routes candidates into per-skill APPLY buckets, the active-work bucket, the review-queue, and drops;
-   also folds in ledger `promotions` and `decays`).
+   also folds in ledger `promotions` and `decays`, and force-drops any fingerprint the user has
+   previously rejected — status `rejected` — so a discarded proposal never resurfaces).
 4. Read `apply-plan.json` - it is compact (one-line claims). This is your work order for Phase 3.
 
 ## Phase 3 - APPLY  (PARALLEL sub-agents, one per target)

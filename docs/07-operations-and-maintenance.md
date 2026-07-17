@@ -26,9 +26,31 @@ It prints a **GREEN / YELLOW / RED** verdict plus:
 ## Daily routine (~2 min)
 1. Glance at the digest / run `dream-status.ps1`.
 2. If YELLOW for pending review: open `journal/<today>.md` (the summary + audit), skim `review-queue/*.md`.
-3. Approve durable proposals (they auto-apply next full run once you keep them / or apply manually), delete
-   ones you don't want. **The ledger won't re-propose what you delete** (fingerprints), so pruning sticks.
+3. **Keep** the durable proposals you want (they auto-apply on the next full run, or apply by hand). **Discard**
+   the ones you don't with `dream-reject.ps1` (see below) — that records a permanent veto so they never
+   come back.
 4. Drop notes for tonight — any of: `dream-note "..."`, tell any Copilot session *"add a dream note: ..."*, or edit `inbox.md`.
+
+## Discarding a proposal you don't want (`dream-reject.ps1`)
+A review-queue proposal is a *suggested* edit awaiting your approval. **Deleting the `.md` file alone is not
+enough**: the nightly run re-classifies your raw sessions/commits each night, so a deleted proposal can
+resurface while its source is still inside the harvest window. To discard one *permanently*:
+
+```powershell
+# see what's pending (title + fingerprint)
+powershell -File ~/.copilot/dream/dream-reject.ps1 -List
+
+# reject one (filename substring), a whole day, or everything pending
+powershell -File ~/.copilot/dream/dream-reject.ps1 -Slug spa-static-js-cache
+powershell -File ~/.copilot/dream/dream-reject.ps1 -Slug 2026-07-17
+powershell -File ~/.copilot/dream/dream-reject.ps1 -All
+```
+
+For each proposal it reads the `fingerprint:` from the file's frontmatter, sets that ledger item to
+`status = rejected`, and deletes the file. On every future run, `reduce.py plan` **force-drops** rejected
+fingerprints — so the claim is never proposed, applied, or promoted again (unlike a plain `dropped` item,
+which the system may reconsider if it recurs). Use `-DryRun` to preview without changing anything. To
+*approve* instead, just leave the file in place.
 
 ## Weekly (~5 min)
 - Skim the week's journals — confirm promotions/decays look right (a short-term thread you finished should

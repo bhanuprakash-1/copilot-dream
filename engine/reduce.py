@@ -108,16 +108,17 @@ def cmd_merge(cfg, args):
           % (len(paths), len(raw), len(merged), expand(args.out)))
 
 
-def ledger_query(cfg_path, sub):
-    """Shell out to ledger.py for promotions/decays; return parsed JSON (or [])."""
+def ledger_query(cfg_path, *sub):
+    """Shell out to ledger.py; return parsed JSON (or []). Pass a subcommand plus any args, e.g.
+    ledger_query(cfg, "promotions") or ledger_query(cfg, "dump", "--status", "rejected")."""
     ledger = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ledger.py")
     try:
-        r = subprocess.run([sys.executable, ledger, "--config", cfg_path, sub],
+        r = subprocess.run([sys.executable, ledger, "--config", cfg_path, *sub],
                            capture_output=True, text=True, timeout=120)
         if r.returncode == 0 and r.stdout.strip():
             return json.loads(r.stdout)
     except Exception as e:
-        sys.stderr.write("WARN ledger %s failed: %s\n" % (sub, e))
+        sys.stderr.write("WARN ledger %s failed: %s\n" % (" ".join(sub), e))
     return []
 
 
@@ -138,6 +139,11 @@ def cmd_plan(cfg, args):
     tmap = build_target_map(cfg)
     long_skills = set((cfg.get("targets", {}).get("long_term_skills", {}) or {}).keys())
     keep_floor = cfg.get("thresholds", {}).get("importance_keep_floor", 4)
+    # Hard user veto: fingerprints the user has explicitly rejected (via dream-reject.ps1 ->
+    # ledger status='rejected') are force-dropped here, so a rejected proposal never resurfaces
+    # even if its source session/commit is still in the harvest window and gets re-classified.
+    rejected = {r.get("fingerprint") for r in ledger_query(args.config, "dump", "--status", "rejected")
+                if r.get("fingerprint")}
 
     plan = {
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -145,6 +151,7 @@ def cmd_plan(cfg, args):
         "active_work": {"skill_file": tmap.get("dream-active-work"), "add": [], "remove_decayed": []},
         "review_queue": [],      # claims needing a proposal file (med/low LONG, new-skill, unroutable)
         "drops_count": 0,
+        "rejected_denied": 0,    # candidates force-dropped because the user rejected them before
         "totals": {},
     }
 
@@ -156,6 +163,11 @@ def cmd_plan(cfg, args):
         entry["claims"].append(c)
 
     for c in cands:
+        fp = c.get("fingerprint")
+        if fp and fp in rejected:
+            plan["drops_count"] += 1
+            plan["rejected_denied"] += 1
+            continue
         horizon = c.get("horizon") or "drop"
         conf = c.get("confidence") or "low"
         target = c.get("target") or ""
@@ -183,6 +195,8 @@ def cmd_plan(cfg, args):
 
     # promotions: recurring SHORT items that have earned LONG status
     for p in ledger_query(args.config, "promotions"):
+        if p.get("fingerprint") in rejected:
+            continue  # user vetoed this claim; never promote it
         tgt = p.get("target") or ""
         pc = {"claim": p.get("claim"), "domain": p.get("domain"),
               "horizon": "long", "confidence": "high", "importance": p.get("importance") or 6,
@@ -208,6 +222,7 @@ def cmd_plan(cfg, args):
         "active_remove": len(plan["active_work"]["remove_decayed"]),
         "review_queue": len(plan["review_queue"]),
         "drops": plan["drops_count"],
+        "rejected_denied": plan["rejected_denied"],
     }
     with open(expand(args.out), "w", encoding="utf-8") as f:
         json.dump(plan, f, indent=2, ensure_ascii=False)
@@ -215,7 +230,8 @@ def cmd_plan(cfg, args):
     for name, v in plan["by_skill"].items():
         print("  APPLY %-32s claims=%d -> %s" % (name, len(v["claims"]), v["skill_file"]))
     print("  ACTIVE-WORK add=%d remove=%d" % (plan["totals"]["active_add"], plan["totals"]["active_remove"]))
-    print("  REVIEW-QUEUE items=%d   DROPS=%d" % (plan["totals"]["review_queue"], plan["totals"]["drops"]))
+    print("  REVIEW-QUEUE items=%d   DROPS=%d (rejected-denied=%d)"
+          % (plan["totals"]["review_queue"], plan["totals"]["drops"], plan["rejected_denied"]))
     print("PLAN FILE: %s" % expand(args.out))
 
 

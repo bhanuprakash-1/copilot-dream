@@ -62,7 +62,7 @@ the harvest snapshot.
 | `importance` | 1–10 (would this help me in 6 months, in a different session?). |
 | `confidence` | `high` \| `medium` \| `low` — gates auto-apply vs review-queue. |
 | `target` | destination skill name, or `dream-active-work`, or `review-queue`. |
-| `status` | `active` \| `applied` \| `proposed` \| `archived` \| `dropped`. |
+| `status` | `active` \| `applied` \| `proposed` \| `archived` \| `dropped` \| `rejected`. |
 | `hit_count` | times this claim has been seen (bumped on every re-sighting). |
 | `distinct_days` | number of distinct days it's been seen (drives promotion). |
 | `first_seen` / `last_seen` / `last_day` | timestamps for decay + distinct-day counting. |
@@ -80,7 +80,7 @@ python ledger.py stats
 python ledger.py upsert --json items.json     # bumps hit_count / distinct_days for repeats
 python ledger.py promotions                    # SHORT items with hit_count>=3 over >=3 distinct days
 python ledger.py decays                         # active SHORT items past decay_days (14)
-python ledger.py set-status --fingerprint F --status applied|proposed|archived|dropped|active
+python ledger.py set-status --fingerprint F --status applied|proposed|archived|dropped|active|rejected
 python ledger.py record-run --json run.json
 python ledger.py dump [--status active] [--horizon short]
 ```
@@ -95,8 +95,10 @@ stateDiagram-v2
     classified --> applied: horizon=long & confidence=high --> reference skill
     classified --> proposed: horizon=long & confidence in {med,low} --> review-queue
     proposed --> applied: you approve
+    proposed --> rejected: you discard (dream-reject.ps1)
     active --> applied: promotion (recurring -> long-term)
     active --> archived: decay (untouched > 14d)
+    rejected --> rejected: force-dropped every future run (never resurfaces)
     applied --> [*]
     archived --> [*]
     dropped --> [*]
@@ -105,6 +107,11 @@ stateDiagram-v2
 Notes:
 - **Drops are still recorded** (as `dropped`) so recurrence is tracked — if a "noise" item keeps recurring
   with rising importance, it can later be reconsidered rather than silently ignored forever.
+- **Rejection is a permanent veto.** Discarding a proposal (`dream-reject.ps1`) sets `status = rejected`;
+  `reduce.py plan` force-drops any rejected fingerprint on every future run, so a claim you've declined is
+  never re-proposed, applied, or promoted again — even though its source session/commit may still be
+  re-classified while it's in the harvest window. (This is the key difference from `dropped`, which *can*
+  be reconsidered.) See [07-operations-and-maintenance](07-operations-and-maintenance.md).
 - **Promotion** is the mechanism that keeps long-term skills earned, not guessed: only facts that recur
   across multiple days become durable.
 - **Decay** keeps `dream-active-work` small; the durable lesson (if any) is promoted before archival.
