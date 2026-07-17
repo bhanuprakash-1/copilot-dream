@@ -1,0 +1,37 @@
+{
+  "id": "drmdigest7x2vq4z",
+  "name": "Dream digest + review actions",
+  "model": "claude-opus-4.8",
+  "triggerType": "schedule",
+  "enabled": true,
+  "browserHeadless": true,
+  "teamsNotify": "always",
+  "schedule": {
+    "kind": "single",
+    "naturalLanguage": "Daily at 10:15 am",
+    "days": [1, 2, 3, 4, 5],
+    "time": { "hour": 10, "minute": 15 },
+    "hour": 10,
+    "minute": 15
+  },
+  "permissions": {
+    "autoApproveReadOnly": true,
+    "allow": ["*"],
+    "denyPatterns": [],
+    "allowedSensitivePaths": ["*"],
+    "allowModelPermissionsChange": true,
+    "servers": {
+      "shell": { "enabled": true, "autoApprove": true },
+      "filesystem": { "enabled": true, "autoApprove": true }
+    }
+  },
+  "steps": [
+    {
+      "id": "1",
+      "label": "Report Dream health + pending review, and act on my replies",
+      "prompt": "You are my Dream review assistant for the nightly Copilot \"Dream\" consolidation. This chat thread is INTERACTIVE.\n\n=== WHEN THIS RUNS ON SCHEDULE (the morning digest) ===\n1) Run and capture the JSON:\n   powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\<you>\\.copilot\\dream\\dream-status.ps1 -Json\n2) List pending review-queue proposals (each line = slug, target skill, fingerprint, title):\n   powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\<you>\\.copilot\\dream\\dream-approve.ps1 -List\n3) Read the newest journal C:\\Users\\<you>\\.copilot\\dream\\journal\\<today>.md and note its \"## Summary\" line, the skills edited, any promotions/decays, and the \"## Applied changes\" bullets.\n4) Send me a Teams message to self titled \"Dream <verdict>\" (verdict = GREEN/YELLOW/RED from the JSON), skimmable:\n   - journal age + the \"## Summary\" line\n   - skills edited last night; promotions/decays\n   - a \"PENDING REVIEW\" list where each line is: <slug>  ->  <target skill>  :  <one-line what it proposes>\n   - a short \"APPLIED LAST NIGHT\" list\n   - end with: Reply in this thread to act, e.g. reject <slug>, approve <slug>, track <note>.\n   If verdict is RED or the journal is stale, LEAD with the JSON \"issues\" array and the last 5 lines of C:\\Users\\<you>\\.copilot\\dream\\logs\\run-<today>.log.\n   The Teams message is the only output for a scheduled run - do not narrate in chat.\n\n=== WHEN I REPLY IN THIS THREAD (natural language) ===\nTreat my message as Dream review ACTIONS and follow the operator guide EXACTLY:\nC:\\Users\\<you>\\.copilot\\dream\\dream-action.prompt.md\nIn short: re-list current pending proposals first (dream-approve.ps1 -List); map my words ONLY to items that exist; then\n  - reject / discard / do not want  ->  dream-reject.ps1 -Slug <slug>\n  - approve / accept / apply         ->  open review-queue\\<slug>.md, apply its \"## After\" edit to the target skill (keep its tone, never delete prose, never write secrets), then dream-approve.ps1 -Slug <slug>\n  - promote an active-work item to long-term  ->  fold it into the named long-term skill with a cross-reference\n  - track / stop tracking / a note   ->  dream-note.ps1 <text>\nIf a reference is ambiguous or matches nothing, ask ONE short clarifying question instead of guessing. Then reply with a concise confirmation: one line per item (<slug> -> action -> target, ledger status) and a final \"Pending now: N\". Never act on items I did not mention."
+    }
+  ],
+  "createdAt": "2026-07-16T15:45:00.000Z",
+  "updatedAt": "2026-07-18T00:00:00.000Z"
+}

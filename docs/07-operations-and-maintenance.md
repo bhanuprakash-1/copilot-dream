@@ -10,7 +10,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $env:USERPROFILE\.copilot\dr
 It prints a **GREEN / YELLOW / RED** verdict plus:
 - newest journal + **how many hours ago** (did last night run?),
 - last run status + model (from the ledger `runs` table),
-- trigger state (Task Scheduler `CopilotDream`, or a desktop automation) + **next run time**,
+- trigger state (Task Scheduler `CopilotDream`, or a Microsoft Scout / ClawPilot automation) + **next run time**,
 - **review-queue count** (what's waiting for you),
 - today's run-log tail on failure.
 
@@ -20,16 +20,58 @@ It prints a **GREEN / YELLOW / RED** verdict plus:
 | **YELLOW** | ran fine but items await your approval, or journal is 28–50 h old | review the queue / check tonight |
 | **RED** | didn't run (journal > 50 h), last run failed, no trigger, or copilot/python missing | see "Recovery" below |
 
-> Tip: wire `dream-status.ps1 -Json` into whatever morning automation you use (e.g. a desktop scheduler that
-> posts to chat) to get this as a message before you log back in — then you don't even have to run the command.
+> Tip: wire `dream-status.ps1 -Json` into whatever morning automation you use — **Microsoft Scout (ClawPilot)**
+> is the author's choice (the shipped `scout-digest-automation.example.json` does exactly this), but any desktop
+> scheduler that can post to chat works — so this arrives as a message before you log back in and you don't even
+> have to run the command.
 
 ## Daily routine (~2 min)
 1. Glance at the digest / run `dream-status.ps1`.
 2. If YELLOW for pending review: open `journal/<today>.md` (the summary + audit), skim `review-queue/*.md`.
-3. **Keep** the durable proposals you want (they auto-apply on the next full run, or apply by hand). **Discard**
-   the ones you don't with `dream-reject.ps1` (see below) — that records a permanent veto so they never
-   come back.
+3. **Approve** the durable proposals you want and **reject** the ones you don't — reply in the Scout digest
+   thread (`approve <slug>` / `reject <slug>`), run the CLI operator, or call `dream-approve.ps1` /
+   `dream-reject.ps1` directly (three equivalent paths, [below](#reviewing--approvingrejecting-knowledge)).
+   High-confidence durable facts already auto-applied overnight; the queue is only the uncertain ones.
 4. Drop notes for tonight — any of: `dream-note "..."`, tell any Copilot session *"add a dream note: ..."*, or edit `inbox.md`.
+
+## Reviewing & approving/rejecting knowledge
+A review-queue proposal is a *suggested* skill edit awaiting your call. There are **three equivalent ways** to
+act on the queue — pick whichever is in front of you:
+
+**(a) Natural language in the Scout "Dream digest + review actions" thread.** Reply in the thread the morning
+digest posts (or the on-demand `scout-review-actions-automation` thread): `reject <slug>`, `approve <slug>`,
+`track <note>`. Scout maps your words to the real pending items and runs the helper scripts for you — no shell
+needed. This is the recommended path; setup is in [05-install-and-schedule.md](05-install-and-schedule.md).
+
+**(b) The CLI natural-language operator.** From any terminal:
+```powershell
+copilot -p ~/.copilot/dream/dream-action.prompt.md "reject the deadlock note and approve the cilium one"
+```
+`dream-action.prompt.md` is the same natural-language front-end Scout uses: it lists what's pending, maps your
+instruction *only* to items that actually exist (asking one question if ambiguous), applies any approved edit to
+the target skill, then records it — never guessing a slug.
+
+**(c) The deterministic scripts directly** (the source of truth both paths above call):
+```powershell
+powershell -File ~/.copilot/dream/dream-approve.ps1 -List          # list pending proposals + target skill
+powershell -File ~/.copilot/dream/dream-approve.ps1 -Slug <name>   # record an approved proposal as applied
+powershell -File ~/.copilot/dream/dream-reject.ps1  -Slug <name>   # permanent veto (never resurfaces)
+powershell -File ~/.copilot/dream/dream-note.ps1 "track the acme-api rollout"   # drop a note for tonight
+```
+
+What each action means:
+- **Approve** = the proposal's `## After` edit is applied to its `target` skill **first**, *then*
+  `dream-approve.ps1` marks the ledger item `status = applied` and deletes the proposal file. Run the script
+  only after the edit is in the skill (the Scout and CLI paths do both halves for you) — recording an approval
+  without the edit would lose the knowledge.
+- **Reject** = `dream-reject.ps1` sets the ledger item `status = rejected` **and** deletes the file — a
+  permanent veto (`reduce.py plan` force-drops rejected fingerprints on every future run).
+- **Note** = `dream-note.ps1` appends a line to `inbox.md`, classified on tonight's run.
+
+> **Deleting a proposal `.md` by hand is not enough.** The nightly run re-classifies your raw sessions/commits
+> each night, so a hand-deleted `review-queue/*.md` can **resurface** while its source is still in the harvest
+> window. Always **approve** or **reject** (both record a ledger status) instead of deleting. The reject
+> deep-dive — `-DryRun`, whole-day and `-All` selectors — is the next section.
 
 ## Discarding a proposal you don't want (`dream-reject.ps1`)
 A review-queue proposal is a *suggested* edit awaiting your approval. **Deleting the `.md` file alone is not

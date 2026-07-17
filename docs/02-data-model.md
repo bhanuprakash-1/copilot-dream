@@ -94,7 +94,7 @@ stateDiagram-v2
     classified --> active: horizon=short --> dream-active-work
     classified --> applied: horizon=long & confidence=high --> reference skill
     classified --> proposed: horizon=long & confidence in {med,low} --> review-queue
-    proposed --> applied: you approve
+    proposed --> applied: you approve (dream-approve.ps1)
     proposed --> rejected: you discard (dream-reject.ps1)
     active --> applied: promotion (recurring -> long-term)
     active --> archived: decay (untouched > 14d)
@@ -112,9 +112,52 @@ Notes:
   never re-proposed, applied, or promoted again — even though its source session/commit may still be
   re-classified while it's in the harvest window. (This is the key difference from `dropped`, which *can*
   be reconsidered.) See [07-operations-and-maintenance](07-operations-and-maintenance.md).
+- **Approval records `applied`.** Accepting a proposal applies its `## After` edit to the `target` skill and
+  `dream-approve.ps1` marks the ledger item `status = applied` (the same terminal state a high-confidence
+  auto-applied claim reaches), then deletes the proposal file so it isn't re-proposed.
 - **Promotion** is the mechanism that keeps long-term skills earned, not guessed: only facts that recur
   across multiple days become durable.
 - **Decay** keeps `dream-active-work` small; the durable lesson (if any) is promoted before archival.
+
+## Review-queue proposal files (frontmatter schema)
+Medium/low-confidence long-term claims (and new-skill proposals) are **not** applied automatically — the
+review-queue sub-agent writes one Markdown file per proposal to `review-queue/<YYYY-MM-DD>-<slug>.md`. Each file
+**must begin with a YAML frontmatter block** so the approve/reject helpers can act on it deterministically (they
+parse `fingerprint` and `target`); the human-readable change follows.
+
+```yaml
+---
+fingerprint: <sha1 of the claim — the same key as the ledger item>
+slug: <short-kebab-slug, also the filename>
+target: <target skill name, or new-skill:<proposed-name> for a brand-new skill>
+horizon: long|short
+confidence: high|medium|low
+importance: <1-10>
+source: sessions|git|inbox|mixed
+date: <YYYY-MM-DD>
+---
+# <short title>
+**Target:** `~/.copilot/skills/<name>/SKILL.md` — section "<section>"
+**Proposes:** <one line: what to add and why it's durable>
+
+## Before
+<the exact current text, or "(new section)">
+
+## After
+<the exact proposed text>
+```
+
+| Field | Meaning / who uses it |
+|---|---|
+| `fingerprint` | Ledger key. `dream-approve.ps1` / `dream-reject.ps1` read it to set the item's `status`; it's how a decision sticks across nights. |
+| `slug` | Human handle + filename — what you name in `approve <slug>` / `reject <slug>`. |
+| `target` | Destination skill, or `new-skill:<name>` for a new skill (whose body proposes it instead of a Before/After). |
+| `horizon` / `confidence` / `importance` / `source` | Mirror the ledger `items` columns for the claim (see above). |
+| `date` | The run that produced the proposal. |
+
+Approving applies the `## After` edit to `target` then records the item `applied`; rejecting records it
+`rejected` and force-drops it forever. See
+[07-operations-and-maintenance.md](07-operations-and-maintenance.md#reviewing--approvingrejecting-knowledge).
 
 ## Thresholds (config.json → thresholds)
 | Key | Default | Effect |

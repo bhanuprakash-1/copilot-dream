@@ -1,0 +1,37 @@
+{
+  "id": "drmactions9k3wz",
+  "name": "Dream review actions",
+  "model": "claude-opus-4.8",
+  "triggerType": "schedule",
+  "enabled": true,
+  "browserHeadless": true,
+  "teamsNotify": "never",
+  "schedule": {
+    "kind": "single",
+    "naturalLanguage": "Daily at 10:20 am (or run on demand)",
+    "days": [1, 2, 3, 4, 5],
+    "time": { "hour": 10, "minute": 20 },
+    "hour": 10,
+    "minute": 20
+  },
+  "permissions": {
+    "autoApproveReadOnly": true,
+    "allow": ["*"],
+    "denyPatterns": [],
+    "allowedSensitivePaths": ["*"],
+    "allowModelPermissionsChange": true,
+    "servers": {
+      "shell": { "enabled": true, "autoApprove": true },
+      "filesystem": { "enabled": true, "autoApprove": true }
+    }
+  },
+  "steps": [
+    {
+      "id": "1",
+      "label": "List pending Dream items and act on my natural-language instruction",
+      "prompt": "This is an on-demand interactive thread for acting on Dream review items without waiting for the morning digest. Follow the operator guide EXACTLY: C:\\Users\\<you>\\.copilot\\dream\\dream-action.prompt.md\n\nFirst, show me what is pending:\n  powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\<you>\\.copilot\\dream\\dream-approve.ps1 -List\n  powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\<you>\\.copilot\\dream\\dream-reject.ps1 -List\nand read the newest C:\\Users\\<you>\\.copilot\\dream\\journal\\<today>.md \"## Applied changes\".\n\nThen act on my natural-language instruction in this thread:\n  - reject / discard  ->  dream-reject.ps1 -Slug <slug>\n  - approve / apply    ->  apply the proposal's \"## After\" edit to the target skill, then dream-approve.ps1 -Slug <slug>\n  - promote an active-work item to long-term  ->  fold it into the named long-term skill with a cross-reference\n  - track / note       ->  dream-note.ps1 <text>\nOnly act on items that actually exist; if ambiguous, ask one short question. End with a concise per-item confirmation and \"Pending now: N\". If I have not given an instruction yet, just show the pending list and wait."
+    }
+  ],
+  "createdAt": "2026-07-18T00:00:00.000Z",
+  "updatedAt": "2026-07-18T00:00:00.000Z"
+}

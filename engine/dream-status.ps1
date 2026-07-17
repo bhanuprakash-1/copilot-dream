@@ -114,7 +114,8 @@ if ($warns.Count)  { Write-Host "  WARNINGS:" -ForegroundColor Yellow; $warns | 
 if ($lastLogTail) { Write-Host "  Today's run log tail:"; Write-Host "      $lastLogTail" }
 Write-Host ""
 Write-Host "  Review:  Get-Content $journalDir\$(if($newestJournal){$newestJournal.Name}else{'<date>.md'})"
-Write-Host "  Approve: inspect $rqDir\*.md then apply/adjust"
-Write-Host "  Discard: powershell -File $engine\dream-reject.ps1 -List   (then -Slug <name> | -All)"
+Write-Host "  Approve: powershell -File $engine\dream-approve.ps1 -List   (after the edit is in the skill; then -Slug <name>)"
+Write-Host "  Discard: powershell -File $engine\dream-reject.ps1 -List    (then -Slug <name> | -All)"
+Write-Host "  Or just reply in the Scout 'Dream digest + actions' thread in plain English (approve / reject / track)."
 Write-Host "  Run now: powershell -File $engine\run-dream.ps1 -Model claude-opus-4.8"
 Write-Host ""

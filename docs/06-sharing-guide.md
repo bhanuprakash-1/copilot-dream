@@ -45,7 +45,7 @@ python %USERPROFILE%\.copilot\dream\ledger.py init
 powershell -File %USERPROFILE%\.copilot\dream\run-dream.ps1 -DryRun
 # 4. one real run
 powershell -File %USERPROFILE%\.copilot\dream\run-dream.ps1
-# 5. schedule (Windows Task Scheduler or a desktop automation app)
+# 5. schedule (Microsoft Scout / ClawPilot recommended, or Windows Task Scheduler as the no-Scout fallback)
 ```
 
 ## Design principles worth keeping if you rebuild it

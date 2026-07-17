@@ -1,5 +1,5 @@
 {
-  "_note": "OPTIONAL example. A 'morning digest' automation for any desktop scheduler / automation runner that can run scheduled Copilot prompts and post to a chat channel. Import it into your scheduler and adjust the %USERPROFILE% paths (and notification target) to your environment. NOT required to run the Dream - the Windows Scheduled Task in triggers/install-scheduled-task.ps1 is the primary nightly trigger.",
+  "_note": "OPTIONAL example. A 'morning digest' automation for any desktop scheduler / automation runner that can run scheduled Copilot prompts and post to a chat channel. The recommended concrete runner is Microsoft Scout (a.k.a. ClawPilot) - see the ready-to-import triggers/scout-digest-automation.example.json (digest + interactive review) and triggers/scout-review-actions-automation.example.json (on-demand actions). Import it into your scheduler and adjust the %USERPROFILE% paths (and notification target) to your environment. NOT required to run the Dream - the Windows Scheduled Task in triggers/install-scheduled-task.ps1 is the primary no-Scout nightly trigger.",
   "id": "drmdigest7x2vq4z",
   "name": "Dream morning digest",
   "model": "claude-opus-4.8",

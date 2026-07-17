@@ -120,11 +120,33 @@ b) One active-work sub-agent (if `apply-plan.active_work` has `add` or `remove_d
 > one line summarizing adds/removals.
 
 c) One review-queue sub-agent (if `apply-plan.review_queue` is non-empty):
-> For each item in `apply-plan.review_queue`, write a proposal file
-> `review-queue/<today>-<slug>.md` describing the exact change: target skill + file, section, and a
-> concrete before/after. For items marked `"new_skill": true`, instead propose the new skill (name,
-> description, and an initial section outline). Do NOT edit any skill in place. If a same-day proposal for
-> that fingerprint already exists, skip it. Return ONLY one line: "queued N proposals".
+> For each item in `apply-plan.review_queue`, write a proposal file `review-queue/<today>-<slug>.md`.
+> It MUST begin with this YAML frontmatter (the approve/reject helpers parse `fingerprint` and
+> `target`), followed by the human-readable change:
+> ```
+> ---
+> fingerprint: <the claim fingerprint>
+> slug: <slug>
+> target: <target skill name, or new-skill:<proposed-name>>
+> horizon: long|short
+> confidence: high|medium|low
+> importance: <1-10>
+> source: sessions|git|inbox|mixed
+> date: <today>
+> ---
+> # <short title>
+> **Target:** `~/.copilot/skills/<name>/SKILL.md` - section "<section>"
+> **Proposes:** <one line: what to add and why it is durable>
+>
+> ## Before
+> <the exact current text, or "(new section)">
+>
+> ## After
+> <the exact proposed text>
+> ```
+> For items marked `"new_skill": true`, set `target: new-skill:<name>` and use the body to propose the new
+> skill (description + initial section outline) instead of a Before/After. Do NOT edit any skill in place.
+> If a same-day proposal for that fingerprint already exists, skip it. Return ONLY one line: "queued N proposals".
 
 Collect the one-line summaries.
 

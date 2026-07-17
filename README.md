@@ -73,8 +73,10 @@ flowchart LR
 - **[GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/use-copilot-agents/use-copilot-cli)**, authenticated (`copilot` on PATH).
 - **Python 3** on PATH (standard library only — no `pip install`).
 - **Windows + PowerShell 5.1+** for the runner/health-check/scheduling. (The Python harvester + ledger are cross-platform; the PowerShell pieces run on PowerShell 7 too, but the Task Scheduler integration is Windows.)
-- *Optional:* any scheduler that can run a prompt on a timer for a morning digest (the author uses a desktop
-  agent; adapt the example to yours). Not required — a plain scheduled task is enough.
+- *Recommended:* **Microsoft Scout** (a.k.a. **ClawPilot**), a Windows agentic-automation app, to schedule the
+  run, post a morning digest to Teams, and let you approve/reject the review queue by replying in plain English.
+  Import-ready automations ship in `engine/triggers/scout-*.example.json`. Not required — **Windows Task
+  Scheduler** (or `cron`) is the no-Scout fallback.
 
 ---
 
@@ -104,6 +106,11 @@ powershell -File $env:USERPROFILE\.copilot\dream\run-dream.ps1
 powershell -File $env:USERPROFILE\.copilot\dream\triggers\install-scheduled-task.ps1
 ```
 
+> Prefer a morning digest + review you can drive in plain English? Import the **Microsoft Scout (ClawPilot)**
+> automations in `engine/triggers/scout-*.example.json` (Scout → **Automations → Import**): you get a Teams
+> digest and an interactive thread where you approve/reject the review queue in plain English. Task Scheduler
+> above is the no-Scout fallback. See [docs/05-install-and-schedule.md](docs/05-install-and-schedule.md).
+
 **Verify any morning** (10-second health check):
 ```powershell
 powershell -File $env:USERPROFILE\.copilot\dream\dream-status.ps1     # GREEN / YELLOW / RED
@@ -114,6 +121,14 @@ powershell -File $env:USERPROFILE\.copilot\dream\dream-status.ps1     # GREEN / 
 powershell -File $env:USERPROFILE\.copilot\dream\dream-note.ps1 "track the acme-api rollout as an active thread"
 ```
 …or just tell any Copilot session: *"add a dream note: …"*.
+
+**Review in plain English** — reply in the Scout digest thread (`approve <slug>`, `reject <slug>`, `track …`),
+or run the same natural-language operator from a terminal:
+```powershell
+copilot -p $env:USERPROFILE\.copilot\dream\dream-action.prompt.md "reject the deadlock note and approve the cilium one"
+```
+Both call the deterministic helpers — `dream-approve.ps1` (record an approved edit), `dream-reject.ps1`
+(permanent veto), `dream-note.ps1` (drop a note). See [docs/07-operations-and-maintenance.md](docs/07-operations-and-maintenance.md#reviewing--approvingrejecting-knowledge).
 
 ---
 
@@ -132,7 +147,7 @@ powershell -File $env:USERPROFILE\.copilot\dream\dream-note.ps1 "track the acme-
 
 | Path | What |
 |---|---|
-| `engine/` | The system: `harvest.py`, `shard.py`, `reduce.py`, `ledger.py`, `run-dream.ps1`, `dream-status.ps1`, `dream-note.ps1`, `dream-consolidation.prompt.md`, `config.example.json`, `triggers/`. |
+| `engine/` | The system: `harvest.py`, `shard.py`, `reduce.py`, `ledger.py`, `run-dream.ps1`, `dream-status.ps1`, `dream-note.ps1`, `dream-approve.ps1`, `dream-reject.ps1`, `dream-action.prompt.md`, `dream-consolidation.prompt.md`, `config.example.json`, `triggers/` (incl. `scout-*.example.json`). |
 | `skills/` | Template skills installed for you: `dream` (thin index/router) + `dream-active-work` (short-term). |
 | `install/install.ps1` | Idempotent bootstrap into `~/.copilot`. |
 | `examples/` | A filled example config + a synthetic journal showing the output. |

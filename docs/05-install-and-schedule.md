@@ -34,7 +34,11 @@ copilot -p "<bootstrap that points at dream-consolidation.prompt.md>" `
 | Max reasoning | `--effort max` |
 | Non-interactive | `-p "<prompt>"` + `--allow-all-tools` + `--no-ask-user` |
 
-## Option A — Windows Task Scheduler (recommended, portable)
+You need exactly one nightly **trigger**. **Microsoft Scout (ClawPilot)** (Option B) is the recommended driver —
+it schedules the run *and* gives you a morning digest with an interactive review thread; **Windows Task
+Scheduler** (Option A) is the dependency-free **no-Scout fallback**. Pick one.
+
+## Option A — Windows Task Scheduler (no-Scout fallback, portable)
 No third-party dependency; runs in your logged-on session so mapped drives + auth work.
 ```powershell
 # register (04:15 daily, runs only when logged on)
@@ -54,15 +58,35 @@ This registers "run only when logged on" (no stored password; shares your intera
 `-RunWhenLoggedOff` only if you truly sign out overnight — but note mapped network drives may be absent in
 session 0; the core sessions→skills path still works because those live under `%USERPROFILE%`.
 
-## Option B — Desktop automation app (optional)
-Some people drive the nightly run from a desktop automation/scheduler app that can also post a morning chat
-digest. This is an optional convenience the author uses — adapt it to whatever scheduler you prefer:
+## Option B — Microsoft Scout / ClawPilot (recommended: schedule + digest + interactive review)
+**Microsoft Scout** (a.k.a. **ClawPilot**) is a Windows agentic-automation app that runs scheduled or on-demand
+agent "automations" with shell auto-approve and posts their output to Teams. It's the author's recommended way
+to drive the Dream, because it covers three jobs at once — trigger the nightly run, deliver a morning **digest**,
+and give you an **interactive review thread** you drive in plain English — with no extra glue code.
 
-1. Point a scheduled shell step at `powershell -File %USERPROFILE%\.copilot\dream\run-dream.ps1 -Model claude-opus-4.8` and let it wait.
-2. (Optional) add a second step that reads today's `journal/<date>.md` and sends you a digest (+ review-queue
-   links) over your chat channel (Teams, Slack, email, …).
+**Trigger the nightly run:** create a scheduled Scout automation whose shell step runs
+`powershell -File %USERPROFILE%\.copilot\dream\run-dream.ps1 -Model claude-opus-4.8` (the same command as the
+Task in Option A). Or keep Task Scheduler for the run itself and use Scout only for the digest + review below.
 
-> To switch the heavy model to GPT-5.6 Sol, change `-Model gpt-5.6-sol` in the shell step.
+**Digest + review — two ready-to-import automations under `engine/triggers/`:**
+
+| File | What it does |
+|---|---|
+| `scout-digest-automation.example.json` | The **morning digest**: runs `dream-status.ps1 -Json`, lists the pending review-queue (`dream-approve.ps1 -List`), reads today's journal, and posts a skimmable `Dream <verdict>` message to Teams. Its chat thread is **interactive** — reply `reject <slug>`, `approve <slug>`, or `track <note>` and the same automation carries it out via the helper scripts. |
+| `scout-review-actions-automation.example.json` | *(optional)* An **on-demand** review-actions thread — open it any time (not only at digest time) to see what's pending and act on it in plain English. |
+
+**Import them** (Scout UI): **Automations → Import**, pick each `*.example.json`, then edit the
+`C:\Users\<you>\...` paths in the prompt to your own profile (and adjust the Teams target / schedule if you
+like). The examples request **shell auto-approve** so the run is unattended; Scout executes the agent, posts to
+Teams, and keeps the automation's chat thread live so your English replies become review actions. The review
+workflow itself is documented in
+[07-operations-and-maintenance.md](07-operations-and-maintenance.md#reviewing--approvingrejecting-knowledge).
+
+> Any other desktop scheduler / automation runner that can run a Copilot prompt on a timer and post to a chat
+> channel works too — adapt `engine/triggers/desktop-scheduler-digest.example.json` to it. Scout is simply the
+> concrete tool the author uses.
+
+> To switch the heavy model to GPT-5.6 Sol, change `-Model gpt-5.6-sol` in the run step.
 
 ## Verifying a run
 ```powershell

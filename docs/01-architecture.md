@@ -123,9 +123,9 @@ dropping noise.
 ## Trigger model (why it works while you're logged off the keyboard)
 Your machine stays **logged on but idle** overnight (sleep is disabled). Because the interactive session is
 alive, your mapped drives, repo roots, and your Copilot auth token are all available at ~04:15 — so either a
-**Windows Scheduled Task** ("run only when logged on") or a **desktop automation app** whose shell step runs
-`run-dream.ps1` works. Windows Task Scheduler is the portable default; a desktop automation app is an optional
-alternative some people prefer because it can also post a morning chat digest. See
+**Windows Scheduled Task** ("run only when logged on") or a **Microsoft Scout (ClawPilot)** automation whose
+shell step runs `run-dream.ps1` works. Scout is the recommended driver — it also posts a morning digest and an
+interactive review thread; Windows Task Scheduler is the portable, no-Scout fallback. See
 [05-install-and-schedule.md](05-install-and-schedule.md).
 
 ## Extensibility
