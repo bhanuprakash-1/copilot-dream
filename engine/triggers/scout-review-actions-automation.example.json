@@ -8,7 +8,7 @@
   "teamsNotify": "never",
   "schedule": {
     "kind": "single",
-    "naturalLanguage": "Daily at 10:20 am (or run on demand)",
+    "naturalLanguage": "Daily at 10:20 am",
     "days": [1, 2, 3, 4, 5],
     "time": { "hour": 10, "minute": 20 },
     "hour": 10,

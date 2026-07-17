@@ -82,6 +82,12 @@ Teams, and keeps the automation's chat thread live so your English replies becom
 workflow itself is documented in
 [07-operations-and-maintenance.md](07-operations-and-maintenance.md#reviewing--approvingrejecting-knowledge).
 
+> **Gotcha — keep `schedule.naturalLanguage` a plain phrase.** On import, Scout *parses* the automation's
+> `schedule.naturalLanguage` (e.g. `"Daily at 10:20 am"`) and uses it as the real schedule — it overrides the
+> `days`/`time`/`hour`/`minute` fields. If that phrase isn't parseable — e.g. it carries an extra parenthetical
+> like `"Daily at 10:20 am (or run on demand)"` — the whole import fails with *"Couldn't import any
+> automations…"*. Use a clean phrase; tweak the exact time/days in the Scout UI afterward.
+
 > Any other desktop scheduler / automation runner that can run a Copilot prompt on a timer and post to a chat
 > channel works too — adapt `engine/triggers/desktop-scheduler-digest.example.json` to it. Scout is simply the
 > concrete tool the author uses.
