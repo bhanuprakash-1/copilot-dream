@@ -14,8 +14,9 @@ context window.
 
 ## Why
 
-Every Copilot session produces useful, durable facts (architecture, conventions, runbooks, cluster/endpoint
-mappings) mixed with throwaway detail (a one-off error, a scratch resource, a personal side-quest). Curating
+Copilot sessions are a mix of durable facts (architecture, conventions, runbooks, cluster/endpoint
+mappings) and throwaway detail (a one-off error, a scratch resource, a personal side-quest) — and some
+sessions are pure noise with nothing worth keeping at all. Curating
 that by hand is high-friction and easy to skip; left alone, your skills either go stale or bloat. Copilot
 Dream automates the curation:
 
