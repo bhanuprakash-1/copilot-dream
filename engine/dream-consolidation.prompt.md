@@ -62,6 +62,13 @@ duplicate content across skills - cross-reference.
 1. Read `config.json`. Note `map_reduce`, `targets`, `thresholds`.
 2. `python ledger.py stats` and `python ledger.py dump --status active` - the compact state of what is
    already tracked (so edits build on it, not blind re-derivation).
+2b. **Bootstrap (cold-start safety).** Ensure the scaffolding skills exist so later phases can write:
+   - If `config.targets.index_skill` or `config.targets.short_term_skill` is missing on disk, create it
+     with a minimal valid `SKILL.md` (frontmatter `name` + `description`, one-line body).
+   - If `config.targets.long_term_skills` is EMPTY and `config.seed.enabled`, ensure the seed skill
+     `config.seed.general_skill` exists (create it from its `name`/`description` if missing) and use its
+     NAME as the SOLE long-term routing target this run - substitute it wherever
+     "[<comma-separated config target skill names>]" appears below.
 3. `python shard.py --config <config>` to split today's harvest into balanced, thread-grouped shards.
 4. Read ONLY `harvest/shards/latest.json` -> the `manifest` file it points to. The manifest lists each
    shard's file, kind, session/commit counts, est_tokens, and branches. Record the shard dir (`.dir`).
@@ -75,7 +82,13 @@ Give each sub-agent exactly this job (substitute the bracketed values):
 
 > You are a Dream classifier sub-agent. (1) Read the "## Classification rubric" section of
 > `~/.copilot/dream/dream-consolidation.prompt.md` and, if configured, the durable filter skill at
-> `config.targets.durable_filter_skill`. (2) Read your shard file `<shard_dir>/shard-<NN>.json` in full.
+> `config.targets.durable_filter_skill`. Also consult, READ-ONLY, any files in
+> `config.read_only_context.agent_instruction_globs` whose path matches the repository of YOUR shard's
+> sessions/commits (they are small; skip non-matching or non-existent ones) - treat them as that repo's
+> authoritative conventions/protocol. Do NOT copy repo-owned coding conventions or repo-specific detail
+> into personal skills; that knowledge belongs to the repo (its agent-history and the in-repo skills under
+> `config.read_only_context.repo_skill_dirs`). Personal skills are for cross-cutting, durable, personal
+> knowledge. (2) Read your shard file `<shard_dir>/shard-<NN>.json` in full.
 > (3) From every session turn (user message = intent, assistant response = findings) and every git commit
 > in the shard, extract atomic **claims** - each a durable, generally-worded fact/pattern/decision, never
 > a play-by-play of "what I did today". (4) Score each claim: `domain`, `horizon` (long|short|drop),
@@ -104,7 +117,10 @@ Launch these in parallel (respect `apply_max_parallel`). Each edits a DIFFERENT 
 safe; never point two sub-agents at the same file.
 
 a) For EACH entry in `apply-plan.by_skill` -> one editor sub-agent:
-> You are a Dream applier for skill `<name>` (`<skill_file>`). Read the CURRENT file in full. Apply these
+> You are a Dream applier for skill `<name>` (`<skill_file>`). If that file does NOT exist yet (a freshly
+> seeded skill, or a configured skill not yet created), CREATE it first with a valid `SKILL.md` frontmatter
+> (`name: <name>` + a one-line `description` of its scope) and a short intro heading; otherwise read the
+> CURRENT file in full. Apply these
 > claims (from `apply-plan.by_skill["<name>"].claims`): <paste the claim list>. For each: if the skill
 > already covers it, refine/dedup in place; otherwise slot it under the best existing section. Preserve
 > the file's tone/tables/headers. NEVER delete existing prose; cross-reference instead of duplicating.
@@ -187,7 +203,10 @@ how much would this help me 6 months from now, in a different session?), `confid
   a durable, reusable dev-workflow lesson -> then `domain=dev-workflow`, `target` = your dev-workflow skill.
 - **LONG** (durable architecture, topology, naming, service/telemetry mapping, API-version quirks, deploy
   playbooks, repo map, permanent constraints, personal preferences): route to the matching reference
-  skill. Apply your durable-vs-transient KEEP filter strictly (if you have one).
+  skill. Apply your durable-vs-transient KEEP filter strictly (if you have one). If the user has NO
+  long-term skills yet (empty `config.targets.long_term_skills`), route every LONG claim to the seed
+  skill (`config.seed.general_skill.name`). Repo-owned conventions documented in a repo's own agent
+  guidance (`config.read_only_context`) are NOT personal knowledge - reference them, do not copy them in.
 - **SHORT** (active feature, in-flight PR, ongoing investigation, current bug being worked, recent test
   result still live): `target=dream-active-work` ONLY. Never put in-flight/incident specifics into a
   reference skill.

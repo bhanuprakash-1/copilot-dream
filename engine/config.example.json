@@ -56,13 +56,8 @@
     "off_domain_note": "Off-domain personal projects and machine-maintenance chatter are DROPPED from your reference skills. Keep an item only if it reveals a durable, reusable dev-workflow lesson."
   },
   "targets": {
-    "_comment": "Replace long_term_skills with YOUR durable reference skills (the long-term routing targets). The names/paths below are generic placeholders - add or remove entries freely.",
-    "long_term_skills": {
-      "service-architecture": "~/.copilot/skills/service-architecture/SKILL.md",
-      "deployment-runbook": "~/.copilot/skills/deployment-runbook/SKILL.md",
-      "telemetry-queries": "~/.copilot/skills/telemetry-queries/SKILL.md",
-      "team-conventions": "~/.copilot/skills/team-conventions/SKILL.md"
-    },
+    "_comment": "List YOUR durable reference skills here; OR leave this empty to let the Dream auto-seed a single 'knowledge-base' skill and propose dedicated ones over time (which you approve). Example entries you might add: 'service-architecture': '~/.copilot/skills/service-architecture/SKILL.md', 'deployment-runbook': '~/.copilot/skills/deployment-runbook/SKILL.md', 'telemetry-queries': '~/.copilot/skills/telemetry-queries/SKILL.md', 'team-conventions': '~/.copilot/skills/team-conventions/SKILL.md'.",
+    "long_term_skills": {},
     "short_term_skill": "~/.copilot/skills/dream-active-work/SKILL.md",
     "index_skill": "~/.copilot/skills/dream/SKILL.md",
     "agent_memory": {
@@ -71,6 +66,28 @@
     },
     "durable_filter_skill": "~/.copilot/skills/durable-filter/SKILL.md",
     "durable_filter_note": "Optional. A skill describing your durable-vs-transient KEEP/DROP filter. Leave the path pointing at a non-existent skill (or remove) if you do not have one."
+  },
+  "read_only_context": {
+    "note": "EDIT THIS (optional): read-only reference sources the Dream CONSULTS but NEVER edits. Point these at YOUR repos' own agent guidance and in-repo skills. During MAP, a classifier sub-agent reads the file(s) matching its shard's repo so extracted knowledge aligns with that repo's conventions, and repo-owned knowledge is deferred to the repo (its agent-history and in-repo skills) instead of being duplicated into your personal skills. Non-existent paths are skipped. Leave the arrays empty if you do not want any repo context.",
+    "agent_instruction_globs": [
+      "C:/path/to/your-repo/.github/copilot-instructions.md",
+      "C:/path/to/your-repo/AGENTS.md",
+      "C:/path/to/your-repo/.github/instructions/*.md",
+      "D:/src/another-repo/.github/copilot-instructions.md"
+    ],
+    "repo_skill_dirs": [
+      "C:/path/to/your-repo/.github/skills"
+    ],
+    "read_caps": { "max_files_per_shard": 12, "max_chars_per_file": 20000 }
+  },
+  "seed": {
+    "enabled": true,
+    "note": "Cold-start behavior. The Dream always ensures the index (dream) and active-work (dream-active-work) skills exist, creating them from a minimal template if missing. If targets.long_term_skills is EMPTY, it also seeds the single general_skill below ('knowledge-base') and routes durable facts there until enough recurring topics emerge to PROPOSE dedicated skills (which you approve). No-op once you have any long-term skill.",
+    "general_skill": {
+      "name": "knowledge-base",
+      "path": "~/.copilot/skills/knowledge-base/SKILL.md",
+      "description": "Personal engineering knowledge base - durable facts, conventions, runbooks, and resource links captured by the nightly Dream. Auto-seeded; split into dedicated skills as topics grow."
+    }
   },
   "thresholds": {
     "promote_hit_count": 3,

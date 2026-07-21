@@ -15,9 +15,19 @@ harvest into balanced, thread-grouped shards. The orchestrator reads only the sh
 (`harvest/shards/latest.json` → `manifest.json`) — file, kind, counts, est_tokens, branches per shard —
 not the shard bodies. An empty day (0 shards) writes a short journal and stops.
 
+Before sharding, a **bootstrap** step guarantees the scaffolding exists so later phases can always write: the
+`dream` index and `dream-active-work` short-term skills are created from a minimal template if missing, and — if
+`config.targets.long_term_skills` is empty and `config.seed.enabled` — the seed skill (`config.seed.general_skill`,
+default `knowledge-base`) is created and used as the **sole** long-term routing target for this run. This is what
+lets the Dream run usefully with zero long-term skills configured (see [cold-start seed](02-data-model.md#cold-start-seed-configjson--seed)).
+
 ## Phase 1 — MAP / Classify  (one sub-agent per shard, in parallel)
 Each MAP sub-agent reads its own `shard-NN.json` (plus the classification rubric and, if configured, your
-KEEP/DROP filter skill), extracts atomic **claims** from every session turn (user = intent, assistant =
+KEEP/DROP filter skill). It also consults, **read-only,** any `config.read_only_context.agent_instruction_globs`
+files whose path matches its shard's repo — that repo's `.github/copilot-instructions.md`, `AGENTS.md`, etc. —
+treating them as the repo's authoritative conventions, and **defers repo-owned knowledge to the repo** (its
+agent-history and in-repo skills under `config.read_only_context.repo_skill_dirs`) instead of copying it into a
+personal skill. It then extracts atomic **claims** from every session turn (user = intent, assistant =
 findings) and each commit, scores each, and writes a compact `claims-NN.json`. Each claim is scored on
 four axes:
 
@@ -37,7 +47,10 @@ four axes:
   yields a durable *dev-workflow* lesson → `domain=dev-workflow`, `target = your dev-workflow skill`.
 - **LONG:** durable architecture, topology, naming, cluster/telemetry mapping, API-version quirks, deploy
   playbooks, repo map, permanent constraints, personal preferences. Apply your KEEP/DROP filter
-  (`config.targets.durable_filter_skill`, if set) strictly. → routed to the matching reference skill.
+  (`config.targets.durable_filter_skill`, if set) strictly. → routed to the matching reference skill. If you
+  have **no** long-term skills yet (empty `config.targets.long_term_skills`), every LONG claim is routed to the
+  seed skill (`config.seed.general_skill.name`) instead. Repo-owned conventions documented in
+  `config.read_only_context` are **not** personal knowledge — reference them, never copy them in.
 - **SHORT:** active feature, in-flight PR, ongoing investigation, current bug, still-live test result.
   → routed to `dream-active-work` **only**. In-flight/incident specifics never enter a reference skill.
 - **Split rule:** a live incident often contains one durable lesson + lots of transient detail. The lesson
@@ -69,9 +82,12 @@ file, so parallel is safe):
 3. **review-queue** — writes a proposal (file, section, before/after; or a new-skill name+outline) for
    every LONG med/low-confidence, unroutable, or new-area item. Does **not** edit a skill.
 
-New skills are never auto-created — they arrive as a review-queue proposal you approve. `repo-memory` (repo-
-specific coding patterns) is recorded in the journal's "for next in-repo session" section, not a personal
-skill (the Dream runs outside repos, so it records rather than commits).
+New skills are **never auto-created** — they arrive as a review-queue proposal you approve. When a claim's
+`target` is unroutable (matches no configured or seeded skill) and its `importance ≥ max(7, importance_keep_floor)`,
+`reduce.py plan` marks it `new_skill: true` and the review-queue sub-agent writes a `new-skill:<name>` proposal
+(description + section outline) instead of editing anything; lower-importance unroutable claims are queued as
+ordinary proposals. `repo-memory` (repo-specific coding patterns) is recorded in the journal's "for next in-repo
+session" section, not a personal skill (the Dream runs outside repos, so it records rather than commits).
 
 ## Phase 4 — Decay & Promote  (computed in REDUCE, executed in APPLY + status)
 - **Promotion** — `ledger.py promotions` surfaces recurring shorts (≥ `promote_hit_count` over ≥

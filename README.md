@@ -136,8 +136,13 @@ Both call the deterministic helpers — `dream-approve.ps1` (record an approved 
 ## What it edits (and what it never touches)
 
 - **It edits *your* skills** under `~/.copilot/skills/` — the ones you point it at in `config.json`, plus the
-  `dream` index and `dream-active-work` short-term skill it ships. Edits are in place, deduped, and it
-  **never deletes your prose** (archival = review-queue or a ledger mark, not silent deletion).
+  `dream` index and `dream-active-work` short-term skill it ships (and, if you've configured no long-term
+  skills, a single auto-seeded `knowledge-base` skill). Edits are in place, deduped, and it **never deletes
+  your prose** (archival = review-queue or a ledger mark, not silent deletion).
+- **It reads your repos, never edits them.** If you point `read_only_context` at your repos' agent guidance
+  (`.github/copilot-instructions.md`, `AGENTS.md`, in-repo skills), the Dream consults them **read-only** to
+  align with each repo's conventions and defers repo-owned knowledge to the repo — it never modifies anything
+  inside your repositories.
 - **Runtime state stays local and git-ignored**: `config.json`, `ledger.db`, `journal/`, `review-queue/`,
   `harvest/`, `logs/`, `state.json`, `inbox.md`. Your personal knowledge is **never** committed by this repo.
 - It never writes secrets/PII into a skill, even if present in a session.
@@ -162,6 +167,20 @@ decay, auto-apply confidence), and the `map_reduce` parallelism caps (shard size
 applies). The runner defaults to a long-context, high-reasoning model (`claude-opus-4.8` or `gpt-5.6-sol`,
 at 1M context / max effort) — change the allowed set in `run-dream.ps1` and `config.json` if you prefer
 another.
+
+### Point it at your repos' agent guidance (read-only)
+Set `read_only_context.agent_instruction_globs` and `read_only_context.repo_skill_dirs` to your repos'
+`.github/copilot-instructions.md`, `AGENTS.md`, `.github/instructions/*.md`, and in-repo skills directories.
+Each night a classifier reads the file(s) matching a shard's repo **read-only**, so extracted knowledge aligns
+with that repo's conventions and repo-owned knowledge is *deferred to the repo* instead of being copied into
+your personal skills. Non-existent paths are skipped, and **the Dream never edits your repos.**
+
+### Zero-config start (seeding)
+You don't have to define any reference skills up front. Leave `targets.long_term_skills` **empty** and the
+Dream still works: it ensures the `dream` index and `dream-active-work` skills exist and seeds a single
+`knowledge-base` skill, routing durable facts there. As recurring topics emerge it **proposes** dedicated
+skills to the review-queue for you to approve — it *proposes, you approve,* and **never auto-creates**
+dedicated skills. Once you have any long-term skill, seeding is a no-op.
 
 ## Docs
 

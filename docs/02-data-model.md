@@ -167,3 +167,34 @@ Approving applies the `## After` edit to `target` then records the item `applied
 | `decay_days` | 14 | active short items older than this are archived |
 | `auto_apply_min_confidence` | `high` | below this, long-term edits go to review-queue |
 | `importance_keep_floor` | 4 | below this, drop unless part of an active thread |
+
+## Read-only reference context (config.json → read_only_context)
+The Dream can **consult, read-only,** your own repos' agent guidance so extracted knowledge aligns with each
+repo's conventions — and so repo-owned knowledge is *deferred to the repo* instead of being duplicated into
+your personal skills. It never edits these files. Optional; leave the arrays empty to skip.
+
+| Key | Meaning |
+|---|---|
+| `agent_instruction_globs` | Globs pointing at your repos' agent-instruction files — e.g. `.github/copilot-instructions.md`, `AGENTS.md`, `.github/instructions/*.md`. During MAP, a classifier sub-agent reads the file(s) whose path matches its shard's repo and treats them as that repo's authoritative conventions/protocol. |
+| `repo_skill_dirs` | Directories holding in-repo skills (e.g. `<repo>/.github/skills`). Knowledge that belongs to these is referenced, not copied into a personal skill. |
+| `read_caps.max_files_per_shard` | Cap on how many matching files one MAP sub-agent reads (default 12). |
+| `read_caps.max_chars_per_file` | Per-file read cap, in characters (default 20000). |
+
+Non-existent paths are **skipped**, so you can list repos you don't always have checked out.
+
+## Cold-start seed (config.json → seed)
+Lets the Dream work before you've configured any long-term skills. With `seed.enabled` (default `true`) the
+orchestrator's Phase 0 bootstrap:
+- ensures the `dream` index skill and `dream-active-work` short-term skill exist (creating either from a minimal template if missing);
+- if `targets.long_term_skills` is **empty**, ensures the single `seed.general_skill` exists and routes every durable (LONG) claim there for that run.
+
+| Key | Meaning |
+|---|---|
+| `enabled` | Master switch for the cold-start bootstrap + seeding. |
+| `general_skill.name` | Seed skill name (default `knowledge-base`). Used as the sole long-term routing target while `long_term_skills` is empty. |
+| `general_skill.path` | Where the seed skill's `SKILL.md` lives (default `~/.copilot/skills/knowledge-base/SKILL.md`). |
+| `general_skill.description` | Frontmatter `description` used when the seed skill is first created. |
+
+Seeding is a **no-op once you have any long-term skill.** As recurring topics emerge, the Dream *proposes*
+dedicated skills to the review-queue (you approve) and you migrate facts out of `knowledge-base`; dedicated
+skills are never auto-created.

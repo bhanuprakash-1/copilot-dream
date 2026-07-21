@@ -28,6 +28,13 @@ Question ──► matches `dream` (broad description) ──► routing table �
 - **Schema per entry:** Title · repo/branch · goal · status · next/open · key files · `last_touched`.
 - **Lifecycle:** refreshed while active; archived after 14 days untouched; durable lessons promoted out first.
 
+### `knowledge-base` — seeded general reference  (`~/.copilot/skills/knowledge-base/SKILL.md`)
+- **Role:** the cold-start catch-all. If you've configured **no** long-term skills, the Dream seeds this one
+  skill and routes every durable fact, convention, runbook, and resource link into it.
+- **Why:** the system is useful from night one, before you've designed your own skill taxonomy.
+- **Lifecycle:** as recurring topics accumulate, the Dream *proposes* dedicated skills (you approve) and content
+  splits out of `knowledge-base`. Configured via `config.seed`; a no-op once any long-term skill exists.
+
 ## Long-term targets (reference skills — examples)
 These are the skills the Dream *refines*. The set below is **illustrative** — configure your own in
 `config.json → targets.long_term_skills`. The Dream refines whichever skills you list; it assumes no
@@ -43,6 +50,14 @@ particular service.
 | `context-capture` | the manual "capture this" path + the authoritative KEEP/DROP filter |
 
 The Dream does **not** duplicate content across these — it refines the right one and cross-references.
+
+## Read-only reference sources (your repos' own guidance)
+Beyond the skills it maintains, the Dream can **consult — never edit —** your repos' agent guidance
+(`config.read_only_context`): each repo's `.github/copilot-instructions.md`, `AGENTS.md`,
+`.github/instructions/*.md`, and in-repo skills directories (`repo_skill_dirs`). A MAP sub-agent reads the
+file(s) matching its shard's repo so extracted knowledge aligns with that repo's conventions, and repo-owned
+knowledge stays in the repo (its agent-history + in-repo skills) rather than being duplicated into a personal
+skill. Non-existent paths are skipped.
 
 ## Relationship to a manual capture skill
 A manual, confirm-first "capture what we learned" skill (referred to here as `context-capture`) is the

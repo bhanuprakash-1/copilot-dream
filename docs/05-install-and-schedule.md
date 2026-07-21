@@ -120,3 +120,9 @@ Get-Content ...\dream\logs\run-<today>.log -Tail 40
 - `thresholds.*` — promotion (hit_count/distinct_days), decay_days, auto-apply confidence, importance floor.
 - `sources.*` — enable/disable sources, add repo roots, truncation sizes.
 - `domain.relevant_keywords` — bias the classifier's domain-relevance.
+- `read_only_context.*` — point `agent_instruction_globs` / `repo_skill_dirs` at your repos' agent guidance
+  (`.github/copilot-instructions.md`, `AGENTS.md`, in-repo skills) so extracted knowledge aligns with each repo's
+  conventions. Consulted **read-only**, non-existent paths skipped — your repos are never edited.
+- `targets.long_term_skills` — the reference skills to refine. **Leave it empty for a zero-config start:** the
+  Dream seeds a single `knowledge-base` skill and *proposes* dedicated skills over time (you approve), so it's
+  useful from night one; fill it in once you know your taxonomy. `seed.enabled` toggles this bootstrap/seeding.

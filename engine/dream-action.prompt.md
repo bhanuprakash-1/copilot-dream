@@ -8,7 +8,7 @@ You turn a plain-English instruction into safe Dream review actions. The determi
 are the source of truth; you are the natural-language front-end for them. NEVER invent items.
 
 Use this either from the Scout "Dream digest + review actions" thread (just reply in English) or from
-the CLI: `copilot -p ~/.copilot/dream/dream-action.prompt.md "reject the deadlock one and approve the cilium note"`.
+the CLI: `copilot -p ~/.copilot/dream/dream-action.prompt.md "reject the flaky-test note and approve the retry-policy one"`.
 
 ## Context you MUST load first (every time, before acting)
 - Engine dir: `~/.copilot/dream` (Windows: `C:\Users\<you>\.copilot\dream`).
@@ -28,7 +28,7 @@ Map my words to one or more of the loaded items. Synonyms:
   -> open `review-queue\<slug>.md`, apply its `## After` edit to the `target` skill with judgment
      (match the skill's tone/tables; append or refine; NEVER delete existing prose; NEVER write secrets
      or PII), then `dream-approve.ps1 -Slug <slug>`  (ledger status=applied + file removed).
-- PROMOTE an active-work item to long-term ("promote the SBG thread into adc-architecture-and-stamp")
+- PROMOTE an active-work item to long-term ("promote the auth-refactor thread into your service-architecture skill")
   -> find it in `~/.copilot/skills/dream-active-work/SKILL.md`, fold a durable version into the named
      (or best-fit) long-term skill with a cross-reference, then tighten or remove the active-work entry
      if it has fully graduated. No script needed; just report what you moved.

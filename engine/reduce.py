@@ -138,6 +138,15 @@ def cmd_plan(cfg, args):
     cands = json.load(open(expand(args.candidates), encoding="utf-8"))
     tmap = build_target_map(cfg)
     long_skills = set((cfg.get("targets", {}).get("long_term_skills", {}) or {}).keys())
+    # Cold-start seed: with no long-term skills configured yet, route durable facts to one auto-seeded
+    # general skill (the orchestrator's bootstrap creates the file) instead of proposing every LONG claim.
+    seed = cfg.get("seed", {}) or {}
+    if not long_skills and seed.get("enabled", True):
+        gs = seed.get("general_skill", {}) or {}
+        seed_name = gs.get("name")
+        if seed_name:
+            long_skills = {seed_name}
+            tmap[seed_name] = expand(gs.get("path") or ("~/.copilot/skills/%s/SKILL.md" % seed_name))
     keep_floor = cfg.get("thresholds", {}).get("importance_keep_floor", 4)
     # Hard user veto: fingerprints the user has explicitly rejected (via dream-reject.ps1 ->
     # ledger status='rejected') are force-dropped here, so a rejected proposal never resurfaces
