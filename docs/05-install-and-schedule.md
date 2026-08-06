@@ -113,7 +113,11 @@ Get-Content ...\dream\logs\run-<today>.log -Tail 40
 - One run reads a day of sessions + all target skills in a single 1M-context pass at max effort — expect
   meaningful AI-credit use per night. Tune by: shortening the window, lowering `--effort` for light days, or
   running every other night. The harvest itself is free (local Python).
-- `run-dream.ps1` advances the watermark **only on success**, so a failed/cancelled night is safely retried.
+- `run-dream.ps1` sets Copilot's background-agent drain to 3300 seconds and requires the orchestrator to
+  keep its headless turn active while parallel agents run. It advances the watermark only after a fresh
+  journal plus final completion marker; a clean Copilot exit by itself is not success.
+- If REDUCE completed before an interruption, the unfinished work order is preserved under `pending/`.
+  Resume only APPLY with `run-dream.ps1 -ReplayPlan <pending-apply-plan.json>`.
 
 ## Tuning knobs (config.json)
 - `window.default_hours` / `max_hours` — how much history each run considers.

@@ -103,6 +103,9 @@ powershell -File $env:USERPROFILE\.copilot\dream\run-dream.ps1 -ProposeOnly
 # 6. once you trust it, a real applying run
 powershell -File $env:USERPROFILE\.copilot\dream\run-dream.ps1
 
+# replay a preserved applying-mode work order after an interrupted run
+powershell -File $env:USERPROFILE\.copilot\dream\run-dream.ps1 -ReplayPlan <pending-apply-plan.json>
+
 # 7. schedule it nightly (runs in your logged-on/idle session)
 powershell -File $env:USERPROFILE\.copilot\dream\triggers\install-scheduled-task.ps1
 ```
@@ -144,7 +147,8 @@ Both call the deterministic helpers — `dream-approve.ps1` (record an approved 
   align with each repo's conventions and defers repo-owned knowledge to the repo — it never modifies anything
   inside your repositories.
 - **Runtime state stays local and git-ignored**: `config.json`, `ledger.db`, `journal/`, `review-queue/`,
-  `harvest/`, `logs/`, `state.json`, `inbox.md`. Your personal knowledge is **never** committed by this repo.
+  `completion/`, `pending/`, `harvest/`, `logs/`, `state.json`, `inbox.md`. Your personal knowledge is
+  **never** committed by this repo.
 - It never writes secrets/PII into a skill, even if present in a session.
 
 ---

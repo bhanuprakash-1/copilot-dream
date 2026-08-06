@@ -115,7 +115,8 @@ fine; both trigger options need this), (c) `copilot` **authenticated**, (d) the 
 | RED: "no nightly trigger found" | task got removed | re-register: `triggers\install-scheduled-task.ps1` |
 | WARN: Task 'CopilotDream' Disabled | someone disabled it | `Enable-ScheduledTask -TaskName CopilotDream` |
 | WARN: last Task result non-zero / RED last run failed | run errored | read `logs\run-<date>.log` + newest `logs\dream-*-*.out.txt`; common: copilot auth expired -> run `copilot` once interactively to re-auth |
-| Runner "hangs" after the journal is written | a copilot subagent/MCP process is slow to tear down | **handled automatically**: the runner judges success by the journal artifact, waits a 180 s grace for record-keeping, then force-kills only the stuck children and advances the watermark. Bounded by `-TimeoutMinutes` (default 60). Nothing for you to do. |
+| Output ends after MAP/REDUCE with `waitForPendingBackgroundTasks timed out` | the headless orchestrator ended its turn while background agents were still running, starting Copilot's shutdown drain | **handled by the current runner/prompt**: the drain is raised to 3300 s and the orchestrator must keep the same turn active with `read_agent(wait:true)`. If it still happens, the watermark stays put and the apply plan is copied to `pending/`. |
+| Runner "hangs" after the completion marker is written | a copilot subagent/MCP process is slow to tear down | **handled automatically**: the runner waits a 180 s grace, then proceeds by the journal + completion marker. Bounded by `-TimeoutMinutes` (default 60). |
 | Journal says harvest = 0 sessions | you didn't use Copilot that day | normal; the Dream still writes a short journal |
 
 ### Health-check the trigger directly
@@ -132,6 +133,9 @@ Enable-ScheduledTask  -TaskName CopilotDream          # resume
 triggers\install-scheduled-task.ps1 -Model gpt-5.6-sol
 # ad-hoc safe run (proposes only, edits nothing):
 run-dream.ps1 -ProposeOnly
+# replay APPLY only from a preserved failed applying-mode work order:
+run-dream.ps1 -ReplayPlan ~/.copilot/dream/pending/apply-plan-<stamp>.json
+# propose-only plans are intentionally not replayable; rerun -ProposeOnly instead
 ```
 
 ## What "maintaining the knowledge" means (your part vs the Dream's)

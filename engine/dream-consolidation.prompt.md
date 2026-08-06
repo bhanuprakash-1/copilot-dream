@@ -33,6 +33,12 @@ long_context - the point of the fan-out is a fresh clean window per unit of work
 - Launch independent sub-agents in PARALLEL (issue all launches in one turn so they run concurrently).
   Respect the caps in `config.map_reduce`: `max_shards` bounds MAP fan-out, `apply_max_parallel` bounds
   APPLY fan-out.
+- **HEADLESS BACKGROUND LIFECYCLE (HARD):** this orchestrator runs under `copilot -p`. NEVER end your
+  turn while a background sub-agent is running. Ending the turn starts a non-resetting host shutdown
+  drain even if completion notifications later wake you. Continue independent work; when none remains,
+  call `read_agent(wait:true, timeout:180)` for each known running agent and repeat until all complete.
+  Do not say "ending my turn", do not wait passively for a notification, and do not return control to
+  the host between launch and collection.
 - If a sub-agent fails, retry it ONCE; if it still fails, note it in the journal and continue. A partial
   Dream is better than none.
 - Keep your own running context tiny. If you ever feel the need to summarize your own context, you have
@@ -74,7 +80,7 @@ duplicate content across skills - cross-reference.
    shard's file, kind, session/commit counts, est_tokens, and branches. Record the shard dir (`.dir`).
    Do NOT open the shard bodies yourself.
    - If the manifest has 0 shards (empty day): write a one-paragraph journal noting "no material",
-     `ledger.py record-run`, and stop.
+     `ledger.py record-run`, write the bootstrap completion marker as the final action, and stop.
 
 ## Phase 1 - MAP / Classify  (PARALLEL sub-agents, one per shard)
 Launch one sub-agent per shard in the manifest, all in the same turn (cap at `map_reduce.max_shards`).
@@ -98,7 +104,9 @@ Give each sub-agent exactly this job (substitute the bracketed values):
 > point. (5) Write the claims as a JSON array to `<shard_dir>/claims-<NN>.json`. Return ONLY one line:
 > "shard <NN>: K claims (L long / S short / D drop)". Do not write anything else back to me.
 
-Collect the one-line summaries. Do NOT read the claims files yourself - the reducer will.
+Keep this SAME turn active until every MAP agent completes: use `read_agent(wait:true, timeout:180)`
+repeatedly rather than ending the turn. Collect the one-line summaries. Do NOT read the claims files
+yourself - the reducer will.
 
 ## Phase 2 - REDUCE / Ledger  (ORCHESTRATOR, lean)
 1. `python reduce.py --config <config> merge --in <shard_dir> --out <shard_dir>/candidates.json`
@@ -114,29 +122,37 @@ Collect the one-line summaries. Do NOT read the claims files yourself - the redu
 
 ## Phase 3 - APPLY  (PARALLEL sub-agents, one per target)
 Launch these in parallel (respect `apply_max_parallel`). Each edits a DIFFERENT file, so parallel is
-safe; never point two sub-agents at the same file.
+safe; never point two sub-agents at the same file. In replay mode, SKIP any bucket marked
+`receipt_complete: true`; its exact failed-run receipt proves that bucket already finished. For the
+list-valued review queue, skip it when top-level `review_queue_receipt_complete` is true.
 
 a) For EACH entry in `apply-plan.by_skill` -> one editor sub-agent:
 > You are a Dream applier for skill `<name>` (`<skill_file>`). If that file does NOT exist yet (a freshly
 > seeded skill, or a configured skill not yet created), CREATE it first with a valid `SKILL.md` frontmatter
 > (`name: <name>` + a one-line `description` of its scope) and a short intro heading; otherwise read the
-> CURRENT file in full. Apply these
-> claims (from `apply-plan.by_skill["<name>"].claims`): <paste the claim list>. For each: if the skill
+> CURRENT file in full. Read ONLY your claims from `<apply_plan_path>` at
+> `by_skill["<name>"].claims`; do not ask the orchestrator to paste them. For each: if the skill
 > already covers it, refine/dedup in place; otherwise slot it under the best existing section. Preserve
 > the file's tone/tables/headers. NEVER delete existing prose; cross-reference instead of duplicating.
 > If a claim is marked `"promoted": true`, phrase it as a now-durable fact (it graduated from short-term).
-> Also reconcile any `review-queue/<today>-*.md` proposal that targets this skill: apply high-confidence
-> ones in place, then DELETE the consumed proposal file. Return ONLY one line: "<name>: <what changed>".
+> Do NOT consume or delete any review-queue proposal; those remain human-gated. After the skill edit
+> succeeds, write `<receipt_dir>/skill-<name>.json` with `bucket="skill"`, `name="<name>"`,
+> `status="complete"`, `completed_utc`, and every claim `fingerprint` from this bucket. Then return
+> ONLY one line: "<name>: <what changed>".
 
 b) One active-work sub-agent (if `apply-plan.active_work` has `add` or `remove_decayed`):
-> You maintain `dream-active-work` (`<short_term_skill file>`). Read it in full. For each thread in
-> `apply-plan.active_work.add`, add or refresh one entry: title, repo/branch, goal, current status, next
+> You maintain `dream-active-work` (`<short_term_skill file>`). Read it in full, then read ONLY
+> `active_work` from `<apply_plan_path>`. For each thread in `active_work.add`, add or refresh one entry:
+> title, repo/branch, goal, current status, next
 > step / open question, key files, `last_touched = <today>`. Remove the entries named in
-> `remove_decayed`. Keep this a tight CURRENT snapshot, not a log; merge duplicate threads. Return ONLY
-> one line summarizing adds/removals.
+> `remove_decayed`. Keep this a tight CURRENT snapshot, not a log; merge duplicate threads. After the
+> edit succeeds, write `<receipt_dir>/active-work.json` with `bucket="active-work"`,
+> `status="complete"`, `completed_utc`, and all add/remove fingerprints. Then return ONLY one line
+> summarizing adds/removals.
 
 c) One review-queue sub-agent (if `apply-plan.review_queue` is non-empty):
-> For each item in `apply-plan.review_queue`, write a proposal file `review-queue/<today>-<slug>.md`.
+> Read ONLY `review_queue` from `<apply_plan_path>`. For each item, write a proposal file
+> `review-queue/<today>-<slug>.md`.
 > It MUST begin with this YAML frontmatter (the approve/reject helpers parse `fingerprint` and
 > `target`), followed by the human-readable change:
 > ```
@@ -162,23 +178,31 @@ c) One review-queue sub-agent (if `apply-plan.review_queue` is non-empty):
 > ```
 > For items marked `"new_skill": true`, set `target: new-skill:<name>` and use the body to propose the new
 > skill (description + initial section outline) instead of a Before/After. Do NOT edit any skill in place.
-> If a same-day proposal for that fingerprint already exists, skip it. Return ONLY one line: "queued N proposals".
+> If a same-day proposal for that fingerprint already exists, skip it. After every proposal is written
+> or confirmed present, write `<receipt_dir>/review-queue.json` with `bucket="review-queue"`,
+> `status="complete"`, `completed_utc`, and all item fingerprints. Then return ONLY one line:
+> "queued N proposals".
 
-Collect the one-line summaries.
+Keep this SAME turn active until every APPLY agent completes: use `read_agent(wait:true, timeout:180)`
+repeatedly rather than ending the turn. Collect the one-line summaries.
 
 ## Phase 4 - Ledger status  (ORCHESTRATOR, lean)
-Using the fingerprints already present in `apply-plan.json` (you do not need any sub-agent detail):
-- Each `by_skill` + `active_work.add` fingerprint that its sub-agent reported applied
+Using the fingerprints already present in `apply-plan.json` and the exact-run receipt files:
+- Each `by_skill` + `active_work.add` fingerprint whose bucket has either `receipt_complete: true`
+  (replay) or a fresh receipt from this run
   -> `python ledger.py set-status --fingerprint <fp> --status applied`.
-- Each `review_queue` fingerprint -> `--status proposed`.
-- Each `active_work.remove_decayed` fingerprint -> `--status archived`.
+- Each `review_queue` fingerprint whose bucket has a replay/fresh receipt -> `--status proposed`.
+- Each `active_work.remove_decayed` fingerprint whose bucket has a replay/fresh receipt
+  -> `--status archived`.
 - Drops were registered by the upsert; leave them (horizon=drop).
 If an APPLY sub-agent FAILED for a skill even after one retry, mark those fingerprints `proposed`
-instead of `applied`, so nothing is silently lost.
+instead of `applied`, so nothing is silently lost. Never infer per-plan completion from the ledger's
+global item status; only this plan's receipt can suppress replay.
 
 ## Phase 5 - Journal + record run  (ORCHESTRATOR, lean)
-Write `journal/<YYYY-MM-DD>.md` from the COMPACT plan totals + your collected one-line summaries (NOT
-from raw sessions):
+Write the exact journal path provided by the bootstrap prompt (normally
+`journal/<YYYY-MM-DD>.md`; replay mode uses a suffixed recovery journal) from the COMPACT plan totals +
+your collected one-line summaries (NOT from raw sessions):
 - **Summary line**: harvested N, shards S, dropped M, active-work +A/-D, skills edited [...], promotions P, review-queue Q.
 - **Applied changes**: one bullet per skill edit (its APPLY summary line).
 - **Active work snapshot**: the current threads after this run.
@@ -186,6 +210,9 @@ from raw sessions):
 - **For next in-repo session**: any repo-specific patterns to commit when next inside that repo.
 - **Dropped (audit)**: the drop count + a few representative samples and why (so pruning stays reviewable).
 Then write a run-record JSON and `python ledger.py record-run --json <file>`.
+After the journal and `record-run` both succeed, write the completion-marker JSON at the exact path
+provided by the bootstrap prompt. This marker is the FINAL filesystem action. Do not finish your turn
+or emit a final response before it exists.
 
 ---
 

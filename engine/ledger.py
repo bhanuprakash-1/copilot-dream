@@ -29,6 +29,11 @@ Item dict shape (upsert):
 import argparse, hashlib, json, os, re, sqlite3, sys
 from datetime import datetime, timezone, timedelta
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 def expand(p): return os.path.expanduser(p)
 def utcnow(): return datetime.now(timezone.utc)
 def iso(dt=None): return (dt or utcnow()).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

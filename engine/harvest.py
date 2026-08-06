@@ -208,8 +208,10 @@ def main():
     state_path = expand(cfg["paths"]["state_file"])
     state = {}
     if os.path.exists(state_path):
-        try: state = json.load(open(state_path, encoding="utf-8"))
-        except Exception: state = {}
+        try:
+            state = json.load(open(state_path, encoding="utf-8-sig"))
+        except Exception as e:
+            raise RuntimeError("could not read Dream watermark %s: %s" % (state_path, e))
 
     since, hours = compute_since(cfg, state, args.hours)
     sessions = harvest_sessions(cfg, since)

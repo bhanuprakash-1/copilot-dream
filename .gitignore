@@ -14,6 +14,8 @@ ledger.db-*
 state.json
 journal/
 review-queue/
+completion/
+pending/
 harvest/
 logs/
 inbox.md
@@ -23,6 +25,8 @@ engine/ledger.db
 engine/state.json
 engine/journal/
 engine/review-queue/
+engine/completion/
+engine/pending/
 engine/harvest/
 engine/logs/
 engine/inbox.md

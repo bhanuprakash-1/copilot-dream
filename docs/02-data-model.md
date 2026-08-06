@@ -14,7 +14,9 @@ Output: `harvest/harvest-<stamp>.json` (machine) + `.md` (human) + `harvest/late
 ### The harvest window (watermark)
 `state.json` stores `last_run_utc`. Next window = `now − (hours_since_last_run + 1h margin)`, floored at
 `window.default_hours` (30) and capped at `window.max_hours` (72). First run uses 30h. The watermark only
-advances on a **successful** consolidation, so a failed night is retried (safely — the ledger dedups).
+advances when both the dated journal and the final `completion/run-<date>-<session>.json` marker were
+written during the run. Copilot process exit code 0 alone is not success. A failed night therefore leaves
+the watermark untouched and is retried (safely — the ledger dedups).
 
 ## Map-reduce artifacts (shard.py / reduce.py)
 The consolidation runs as map-reduce (see [01-architecture](01-architecture.md)). Two deterministic
@@ -47,8 +49,18 @@ live in a per-run scratch dir `harvest/shards/<stamp>/` (stable pointer: `harves
   `plan` also folds in `ledger.py promotions` (recurring shorts that earned long-term status).
 
 All of `shard-NN.json`, `claims-NN.json`, `candidates.json`, `apply-plan.json`, and `manifest.json` are
-scratch — git-ignored, retained for the last ~10 nights by `run-dream.ps1`, and fully reproducible from
-the harvest snapshot.
+normally scratch — git-ignored, retained for the last ~10 nights by `run-dream.ps1`, and fully reproducible
+from the harvest snapshot. If a run reaches REDUCE but does not write its final completion marker, the
+runner copies the freshest `apply-plan.json` into durable local `pending/` storage with a metadata sidecar.
+Replay it with `run-dream.ps1 -ReplayPlan <path>`; replay mode skips harvest/MAP/REDUCE and does not advance
+the normal harvest watermark. Each successful APPLY bucket writes an exact-run receipt under
+`completion/receipts/<session>/`. The failed-plan metadata points to that receipt directory, and
+`reduce.py replay` marks only those exact buckets complete. It never treats the ledger's global item
+status as proof that this plan executed, but it does re-check the permanent `rejected` veto and removes
+claims the user rejected after the failed run. Replay writes a suffixed recovery journal rather than
+replacing an existing normal journal for that date. Propose-only plans remain audit artifacts and cannot
+be replayed as applying runs. Derived replay plans are internal files under `pending/.work/`; only
+preserved `pending/apply-plan-*.json` files are valid `-ReplayPlan` inputs.
 
 ## Ledger schema (ledger.db)
 

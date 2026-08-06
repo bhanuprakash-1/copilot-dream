@@ -19,6 +19,11 @@ Subcommands:
          then route every candidate to: a per-skill APPLY bucket (LONG + high-confidence), the
          active-work bucket (SHORT), the review-queue (LONG + med/low, or new-skill), or drop.
 
+  replay --config <cfg> --in <apply-plan.json> --out <annotated-apply-plan.json>
+         Annotate a preserved plan with completed APPLY buckets from receipt files. Recovery skips
+         only buckets that have a receipt from that exact failed run; global ledger status is not
+         used as a proxy for per-plan completion.
+
 MAP output item shape (what each classifier sub-agent writes; same as ledger upsert):
   { "claim","domain","horizon","importance","confidence","target","source","evidence","notes" }
 
@@ -112,14 +117,31 @@ def ledger_query(cfg_path, *sub):
     """Shell out to ledger.py; return parsed JSON (or []). Pass a subcommand plus any args, e.g.
     ledger_query(cfg, "promotions") or ledger_query(cfg, "dump", "--status", "rejected")."""
     ledger = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ledger.py")
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
     try:
         r = subprocess.run([sys.executable, ledger, "--config", cfg_path, *sub],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           env=env, timeout=120)
         if r.returncode == 0 and r.stdout.strip():
             return json.loads(r.stdout)
     except Exception as e:
         sys.stderr.write("WARN ledger %s failed: %s\n" % (" ".join(sub), e))
     return []
+
+
+def ledger_query_strict(cfg_path, *sub):
+    """Shell out to ledger.py and fail if a safety-critical query cannot be completed."""
+    ledger = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ledger.py")
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    r = subprocess.run([sys.executable, ledger, "--config", cfg_path, *sub],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       env=env, timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError("ledger %s failed (exit %s): %s"
+                           % (" ".join(sub), r.returncode, r.stderr.strip()))
+    return json.loads(r.stdout) if r.stdout.strip() else []
 
 
 def build_target_map(cfg):
@@ -151,7 +173,7 @@ def cmd_plan(cfg, args):
     # Hard user veto: fingerprints the user has explicitly rejected (via dream-reject.ps1 ->
     # ledger status='rejected') are force-dropped here, so a rejected proposal never resurfaces
     # even if its source session/commit is still in the harvest window and gets re-classified.
-    rejected = {r.get("fingerprint") for r in ledger_query(args.config, "dump", "--status", "rejected")
+    rejected = {r.get("fingerprint") for r in ledger_query_strict(args.config, "dump", "--status", "rejected")
                 if r.get("fingerprint")}
 
     plan = {
@@ -244,6 +266,122 @@ def cmd_plan(cfg, args):
     print("PLAN FILE: %s" % expand(args.out))
 
 
+def cmd_replay(cfg, args):
+    plan = json.load(open(expand(args.inp), encoding="utf-8-sig"))
+    rejected = {
+        r.get("fingerprint")
+        for r in ledger_query_strict(args.config, "dump", "--status", "rejected")
+        if r.get("fingerprint")
+    }
+    replayable_fps = {
+        c.get("fingerprint")
+        for entry in plan.get("by_skill", {}).values()
+        for c in entry.get("claims", [])
+        if c.get("fingerprint")
+    }
+    replayable_fps.update(
+        c.get("fingerprint")
+        for c in plan.get("active_work", {}).get("add", [])
+        if c.get("fingerprint")
+    )
+    replayable_fps.update(
+        c.get("fingerprint")
+        for c in plan.get("review_queue", [])
+        if c.get("fingerprint")
+    )
+    rejected_denied = len(replayable_fps.intersection(rejected))
+
+    def not_rejected(item):
+        return item.get("fingerprint") not in rejected
+
+    for entry in plan.get("by_skill", {}).values():
+        entry["claims"] = [c for c in entry.get("claims", []) if not_rejected(c)]
+    plan["by_skill"] = {
+        name: entry for name, entry in plan.get("by_skill", {}).items()
+        if entry.get("claims")
+    }
+    active = plan.setdefault("active_work", {"skill_file": None, "add": [], "remove_decayed": []})
+    active["add"] = [c for c in active.get("add", []) if not_rejected(c)]
+    plan["review_queue"] = [c for c in plan.get("review_queue", []) if not_rejected(c)]
+
+    receipts_dir = expand(args.receipts) if args.receipts else None
+    completed = set()
+    completed_skills = {}
+    completed_active = set()
+    completed_review = set()
+    receipt_files = []
+    receipt_warnings = []
+    if receipts_dir and os.path.isdir(receipts_dir):
+        receipt_files = sorted(globmod.glob(os.path.join(receipts_dir, "*.json")))
+    for path in receipt_files:
+        try:
+            receipt = json.load(open(path, encoding="utf-8-sig"))
+        except Exception as e:
+            receipt_warnings.append("%s: %s" % (path, e))
+            continue
+        if receipt.get("status") == "complete":
+            fps = {fp for fp in receipt.get("fingerprints", []) if fp}
+            completed.update(fps)
+            bucket = receipt.get("bucket")
+            if bucket == "skill" and receipt.get("name"):
+                completed_skills.setdefault(receipt["name"], set()).update(fps)
+            elif bucket == "active-work":
+                completed_active.update(fps)
+            elif bucket == "review-queue":
+                completed_review.update(fps)
+
+    completed_buckets = 0
+    for name, entry in plan.get("by_skill", {}).items():
+        fps = {c.get("fingerprint") for c in entry.get("claims", []) if c.get("fingerprint")}
+        entry["receipt_complete"] = bool(fps) and fps.issubset(completed_skills.get(name, set()))
+        if entry["receipt_complete"]:
+            completed_buckets += 1
+    active_fps = {
+        c.get("fingerprint")
+        for c in active.get("add", []) + active.get("remove_decayed", [])
+        if c.get("fingerprint")
+    }
+    active["receipt_complete"] = bool(active_fps) and active_fps.issubset(completed_active)
+    if active["receipt_complete"]:
+        completed_buckets += 1
+    review_fps = {
+        c.get("fingerprint") for c in plan.get("review_queue", []) if c.get("fingerprint")
+    }
+    plan["review_queue_receipt_complete"] = bool(review_fps) and review_fps.issubset(completed_review)
+    if plan["review_queue_receipt_complete"]:
+        completed_buckets += 1
+
+    plan["replay"] = {
+        "source_plan": os.path.abspath(expand(args.inp)),
+        "filtered_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "receipts_dir": os.path.abspath(receipts_dir) if receipts_dir else None,
+        "receipt_files": len(receipt_files),
+        "receipt_warnings": receipt_warnings,
+        "completed_fingerprints": sorted(completed),
+        "completed_buckets": completed_buckets,
+        "rejected_denied": rejected_denied,
+    }
+    totals = plan.setdefault("totals", {})
+    totals.update({
+        "skills_to_edit": len(plan.get("by_skill", {})),
+        "apply_claims": sum(len(v.get("claims", [])) for v in plan.get("by_skill", {}).values()),
+        "active_add": len(active.get("add", [])),
+        "active_remove": len(active.get("remove_decayed", [])),
+        "review_queue": len(plan.get("review_queue", [])),
+        "replay_completed_buckets": completed_buckets,
+        "replay_completed_fingerprints": len(completed),
+        "replay_rejected_denied": rejected_denied,
+    })
+
+    with open(expand(args.out), "w", encoding="utf-8") as f:
+        json.dump(plan, f, indent=2, ensure_ascii=False)
+    print("REPLAY OK  apply=%d  active_add=%d  active_remove=%d  review=%d  completed_buckets=%d  -> %s"
+          % (totals["apply_claims"], totals["active_add"], totals["active_remove"],
+             totals["review_queue"], totals["replay_completed_buckets"], expand(args.out)))
+    for warning in receipt_warnings:
+        print("REPLAY WARN malformed receipt ignored: %s" % warning)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="~/.copilot/dream/config.json")
@@ -254,9 +392,13 @@ def main():
     p = sub.add_parser("plan")
     p.add_argument("--candidates", required=True)
     p.add_argument("--out", required=True)
+    r = sub.add_parser("replay")
+    r.add_argument("--in", dest="inp", required=True)
+    r.add_argument("--out", required=True)
+    r.add_argument("--receipts")
     args = ap.parse_args()
     cfg = load_config(args.config)
-    {"merge": cmd_merge, "plan": cmd_plan}[args.cmd](cfg, args)
+    {"merge": cmd_merge, "plan": cmd_plan, "replay": cmd_replay}[args.cmd](cfg, args)
 
 
 if __name__ == "__main__":
