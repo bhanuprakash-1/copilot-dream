@@ -7,23 +7,37 @@
     "git_names": ["Acme Dev"]
   },
   "model_policy": {
-    "allowed": ["gpt-5", "claude-opus-4.5"],
-    "default": "gpt-5",
+    "allowed": ["gpt-5.6-sol"],
+    "default": "gpt-5.6-sol",
     "context": "long_context",
-    "effort": "high",
-    "note": "Replace with Copilot models you have access to. Prefer a large context window and high reasoning effort. run-dream.ps1 enforces this allow-list."
+    "effort": "xhigh",
+    "note": "Cost-conscious default: GPT-5.6 Sol. All agents and retries must explicitly use long_context and xhigh reasoning; no automatic, alternate-model, or default-context fallback."
   },
   "window": {
     "default_hours": 30,
-    "max_hours": 72,
-    "note": "Harvest window = now - min(hours since last successful run, max_hours), floored at default_hours on first run."
+    "max_hours": 168,
+    "overlap_minutes": 15,
+    "note": "First run looks back default_hours; later runs resume at the previous successful harvest cutoff minus overlap_minutes, capped at max_hours."
+  },
+  "runner": {
+    "max_attempts": 2,
+    "retry_backoff_seconds": 120,
+    "total_budget_minutes": 170,
+    "disable_mcp_servers": true,
+    "keep_mcp_servers": []
   },
   "sources": {
     "cli_sessions": {
       "enabled": true,
       "db": "~/.copilot/session-store.db",
-      "assistant_truncate_chars": 1600,
-      "user_truncate_chars": 4000,
+      "use_event_log": true,
+      "session_state_dir": "~/.copilot/session-state",
+      "user_message_max_chars": 6000,
+      "assistant_final_max_chars": 8000,
+      "assistant_interim_max_chars": 600,
+      "summary_max_chars": 8000,
+      "prior_context_max_chars": 3000,
+      "session_budget_chars": 80000,
       "skip_empty_sessions": true,
       "exclude_cwd_substrings": ["\\.copilot\\dream", "/.copilot/dream"]
     },
@@ -48,8 +62,10 @@
     "long_term_skills": {
       "service-architecture": "~/.copilot/skills/service-architecture/SKILL.md",
       "deployment-runbook": "~/.copilot/skills/deployment-runbook/SKILL.md",
-      "telemetry-queries": "~/.copilot/skills/telemetry-queries/SKILL.md"
+      "telemetry-queries": "~/.copilot/skills/telemetry-queries/SKILL.md",
+      "team-conventions": "~/.copilot/skills/team-conventions/SKILL.md"
     },
+    "general_skill": "team-conventions",
     "short_term_skill": "~/.copilot/skills/dream-active-work/SKILL.md",
     "index_skill": "~/.copilot/skills/dream/SKILL.md",
     "agent_memory": {
@@ -63,7 +79,10 @@
     "decay_days": 14,
     "auto_apply_min_confidence": "high",
     "importance_keep_floor": 4,
-    "note": "SHORT items seen >= promote_hit_count over >= promote_distinct_days distinct days become promotion candidates. Active SHORT items untouched for decay_days are archived. Only HIGH-confidence LONG items auto-apply; others go to review-queue. Items with importance < importance_keep_floor are dropped unless part of an active thread."
+    "skill_budget_chars": 60000,
+    "active_work_budget_chars": 20000,
+    "active_work_max_threads": 20,
+    "note": "SHORT items seen >= promote_hit_count over >= promote_distinct_days distinct days become promotion candidates (feature-scoped status never promotes). Active SHORT items untouched for decay_days are archived. Only HIGH-confidence LONG items auto-apply; others go to review-queue. Items with importance < importance_keep_floor are dropped unless part of an active thread. Skills over their char budget are edited without growing."
   },
   "paths": {
     "engine": "~/.copilot/dream",
@@ -73,6 +92,8 @@
     "logs_dir": "~/.copilot/dream/logs",
     "ledger_db": "~/.copilot/dream/ledger.db",
     "state_file": "~/.copilot/dream/state.json",
-    "prompt_file": "~/.copilot/dream/dream-consolidation.prompt.md"
+    "prompt_file": "~/.copilot/dream/dream-consolidation.prompt.md",
+    "skills_dir": "~/.copilot/skills",
+    "archive_dir": "~/.copilot/dream/archive"
   }
 }

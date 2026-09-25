@@ -1,6 +1,6 @@
 # 03 — Consolidation Algorithm
 
-The nightly agent (Opus/GPT @ 1M/max) executes `~/.copilot/dream/dream-consolidation.prompt.md` as a
+The nightly agent (GPT-5.6 Sol / long_context / xhigh, explicitly also set on every sub-agent and retry) executes `~/.copilot/dream/dream-consolidation.prompt.md` as a
 **lean map-reduce orchestrator** — it shards the harvest, fans classification out to parallel sub-agents,
 merges their output deterministically, then fans the edits out to parallel per-skill sub-agents. This doc
 explains the logic; the prompt file is the source of truth. See
@@ -27,16 +27,47 @@ KEEP/DROP filter skill). It also consults, **read-only,** any `config.read_only_
 files whose path matches its shard's repo — that repo's `.github/copilot-instructions.md`, `AGENTS.md`, etc. —
 treating them as the repo's authoritative conventions, and **defers repo-owned knowledge to the repo** (its
 agent-history and in-repo skills under `config.read_only_context.repo_skill_dirs`) instead of copying it into a
-personal skill. It then extracts atomic **claims** from every session turn (user = intent, assistant =
-findings) and each commit, scores each, and writes a compact `claims-NN.json`. Each claim is scored on
-four axes:
+personal skill. It then reads each session's `dialogue` — the user's prompts, the agent's commentary and final
+answers (with the tools it ran), and compaction summaries — mines the **back-and-forth**, plus each commit, and
+writes a compact `claims-NN.json`. Each claim is scored on these axes:
 
 | Axis | Values | Question |
 |---|---|---|
 | `domain` | your project/area tags (e.g. acme-api / platform / dev-workflow / off-domain) | Which area? |
-| `horizon` | long / short / drop | Durable, in-flight, or noise? |
-| `importance` | 1–10 | Would this help me in 6 months, elsewhere? |
+| `scope` | feature / topic / cross-cutting | In-flight status, durable knowledge about one system, or durable and general? |
+| `horizon` | long / short / drop | Durable, in-flight, or noise? (follows `scope`) |
+| `importance` | 1–10 | Would this help me in 6 months, elsewhere? (breadth counts) |
 | `confidence` | high / med / low | How sure am I this is a correct, general fact? |
+| `signal` | question / correction / preference / decision / finding / status | What did the conversation yield? |
+
+### Mining the conversation
+The dialogue is primary evidence, read as a conversation rather than a log:
+- **Questions → settled answers.** An answer that survives (evidence-backed, not contradicted, built on by
+  follow-ups) yields a claim; a question asked repeatedly or answered only after a long investigation marks a
+  knowledge gap and raises importance.
+- **Corrections.** When the user corrects the agent or evidence overturns an answer, the corrected fact is kept
+  (plus a one-line pitfall if the wrong assumption is natural); the superseded version never is.
+- **Preferences** stated in instructions or pushback become `cross-cutting` claims only when they apply beyond
+  the task at hand — and not if the user's global instructions already say them.
+- **Confidence follows the dialogue:** verified or confirmed → high; unverified agent reasoning → medium at most;
+  doubted or later revised → low or drop. `prior_context` is orientation only (harvested on an earlier night).
+
+### Scope decides the home
+| `scope` | Meaning | Home |
+|---|---|---|
+| `feature` | only meaningful while one feature / PR / investigation / incident is in flight | `dream-active-work` (short, decays) |
+| `topic` | durable knowledge about one system that outlives the current work | the reference skill that owns it |
+| `cross-cutting` | durable, not about one system (tools, workflows, lessons, preferences) | `targets.general_skill`, or the skill that owns that tool |
+
+The test is *"would this still be true and useful after this feature is finished?"* — if yes, it is not
+`feature`, even when it was discovered during one, so learnings leave `dream-active-work`; only live status stays.
+
+### Altitude & anti-bloat
+A skill holds knowledge at its own level of generality. A LONG claim is a general rule/pattern/fact in one or
+two sentences with at most one example; instance detail (resource names, IDs, PR/bug numbers, SHAs, dates,
+counts, one-off errors) is stripped unless the target skill is specifically about it. Code-level specifics from
+one investigation belong to the repo, not a personal skill. A claim that only restates what a skill says is a
+drop. Inbox vetoes ("do not reintroduce …", "keep X lean") produce no claim and override paraphrases.
 
 ### Anti-pollution classification rules (the core requirement)
 - **DROP (written nowhere):**
@@ -65,22 +96,31 @@ thread's sessions into the same shard, so one MAP sub-agent sees the whole threa
 ## Phase 2 — REDUCE / Register  (orchestrator + reduce.py)
 `reduce.py merge` concatenates every `claims-NN.json`, dedups by fingerprint, and **conservatively
 resolves cross-shard disagreement** (a claim two shards score differently is never auto-elevated to
-long/high — it is demoted toward active-work or review). The merged `candidates.json` is upserted via
+long/high — it is demoted toward active-work or review; when shards disagree on scope, the durable reading
+wins with confidence capped, so a learning cannot hide in active-work). The merged `candidates.json` is upserted via
 `ledger.py upsert` (all candidates, including drops; repeats bump `hit_count` / `distinct_days` — this is
 where cross-night memory accumulates). Then `reduce.py plan` builds `apply-plan.json`: the per-skill APPLY
-buckets, the active-work add/remove lists, the review-queue, and the drop count — folding in ledger
-`promotions` and `decays` (see Phase 4).
+buckets, the active-work add/remove lists, the review-queue, and the drop count — enforcing scope (a
+`feature` claim never reaches a reference skill; a `topic`/`cross-cutting` one never lands in active-work),
+attaching each target's size vs budget, and folding in ledger `promotions` and `decays` (see Phase 4).
 
 ## Phase 3 — APPLY  (one sub-agent per target, in parallel)
 From `apply-plan.json` the orchestrator launches one editor sub-agent per bucket (each edits a different
 file, so parallel is safe):
 1. **per reference skill** (`by_skill`) — LONG + high-confidence claims. In-place edit: refine an existing
-   entry if present, else slot under the best section; dedup first; preserve tone/tables/headers; a
-   `promoted` claim is phrased as a now-durable fact. Also reconciles any same-day review-queue proposal
-   for that skill (applies high-confidence ones, deletes the consumed file).
-2. **`dream-active-work`** — adds/refreshes active threads and removes decayed ones. Kept a tight snapshot.
+   entry if present, else add one concise bullet under the best section, at the skill's level of generality;
+   dedup first; preserve tone/tables/headers; a `promoted` claim is phrased as a now-durable fact. Claims
+   that are vetoed, already covered, or too specific for the skill are skipped (`skipped_fingerprints` in the
+   receipt). If the skill is over its `budget_chars`, the edit must not grow it — duplicates are merged and
+   wording tightened in the touched sections, without losing a fact.
+2. **`dream-active-work`** — adds/refreshes active threads (one ≤ ~8-line entry per thread: goal, status,
+   next step, key files, links — no design detail or learnings) and removes decayed ones. Over its budget or
+   thread cap it is compacted: stale threads collapse to one-liners, the oldest drop off, and every removed
+   line is first appended to `archive/active-work-<date>.md`.
 3. **review-queue** — writes a proposal (file, section, before/after; or a new-skill name+outline) for
-   every LONG med/low-confidence, unroutable, or new-area item. Does **not** edit a skill.
+   every LONG med/low-confidence, unroutable, or new-area item, worded as it would appear in the skill.
+   Items it cannot express at the target's level of generality are skipped rather than queued. Does **not**
+   edit a skill.
 
 New skills are **never auto-created** — they arrive as a review-queue proposal you approve. When a claim's
 `target` is unroutable (matches no configured or seeded skill) and its `importance ≥ max(7, importance_keep_floor)`,
@@ -91,24 +131,30 @@ session" section, not a personal skill (the Dream runs outside repos, so it reco
 
 ## Phase 4 — Decay & Promote  (computed in REDUCE, executed in APPLY + status)
 - **Promotion** — `ledger.py promotions` surfaces recurring shorts (≥ `promote_hit_count` over ≥
-  `promote_distinct_days` distinct days); `reduce.py plan` routes each to its LONG target (applied by the
+  `promote_distinct_days` distinct days; `feature`-scoped status never promotes — a long-running feature is
+  not durable knowledge); `reduce.py plan` routes each to its LONG target (applied by the
   Phase-3 skill sub-agent) or to the review-queue. This is how short-term facts *earn* long-term status.
 - **Decay** — `ledger.py decays` surfaces stale active shorts; the active-work sub-agent removes them from
   `dream-active-work` and they are marked `archived`. Keeps active context small.
-Finally the orchestrator marks each fingerprint via `ledger.py set-status` (applied / proposed / archived),
-using the fingerprints already in `apply-plan.json`.
+Finally the orchestrator marks each fingerprint via `ledger.py set-status` (applied / proposed / archived,
+or `dropped` for anything an applier listed in `skipped_fingerprints`), using the fingerprints already in
+`apply-plan.json`.
 
 ## Phase 5 — Journal + record run  (orchestrator)
 `journal/<YYYY-MM-DD>.md` is written from the compact plan + one-line sub-agent summaries (never raw
-sessions): a summary line (harvested/shards/dropped/active±/edited/promoted/queued), applied changes per
-skill, the current active-work snapshot, review-queue links, repo-memory notes for the next in-repo
+sessions): a summary line (harvested sessions/prompts/answers, shards, dropped, rerouted, active±, edited,
+promoted, queued), applied changes per skill, the conversation signals (questions answered, corrections,
+preferences), a size check (each edited skill's chars before → after vs budget), the current active-work
+snapshot, review-queue links, repo-memory notes for the next in-repo
 session, and an audit sample of what was dropped and why. Then a run record via `ledger.py record-run`.
 
 ## Guardrails
 - Never write secrets/tokens/PII — even if present in a session.
 - Never delete your existing skill prose; only refine/append/dedup. "Archival" = move to review-queue or mark
-  in the ledger, not silent deletion.
-- Keep `dream` and `dream-active-work` **small** (they load often); detail lives in on-demand reference skills.
+  in the ledger, not silent deletion. Tightening wording or merging duplicates to respect a skill's budget is
+  refinement only when no fact is lost; `dream-active-work` compaction archives removed text first.
+- Keep `dream` and `dream-active-work` **small** (they load often); detail lives in on-demand reference skills,
+  at the level of generality of the skill that holds it.
 - Idempotent: fingerprints prevent double-applying the same night.
 - Partial > none: if a source errors, continue with the rest.
 
@@ -119,8 +165,10 @@ below is what matters:
 
 | Raw signal | Classification | Destination |
 |---|---|---|
-| Branch `feature/checkout-retry` across 2 sessions + commit `a1b2c3d` | SHORT, acme-api, imp 7 | `dream-active-work` thread |
-| "Gateway retries must be idempotent (durable rule learned while fixing a double-charge)" | SHORT now; durable design lesson → LONG candidate on recurrence | active thread + ledger (watch for promotion) |
+| Branch `feature/checkout-retry` across 2 sessions + commit `a1b2c3d` | SHORT (`feature`), acme-api, imp 7 | `dream-active-work` thread |
+| "Gateway retries must be idempotent (durable rule learned while fixing a double-charge)" | LONG (`topic`) — outlives the feature it was found in | `service-architecture` (the double-charge PR status stays in the thread) |
+| User corrects the agent: "no — the gateway retries only on 503, not all 5xx" | LONG (`topic`, `correction`, high) | `service-architecture` gets the corrected fact; the wrong claim is never written |
+| "The retry handler in `PaymentClient.cs` swallows timeouts" found in one investigation | code-level specific | DROP (belongs in the repo/PR, not a personal skill) |
 | "Build my weekend hobby mobile app" session | off-domain | DROP |
 | "Clean up C: drive disk space" session | machine chatter | DROP |
 | Nightly scheduler run transcript | automation noise | DROP |

@@ -18,6 +18,9 @@ Subcommands:
          Query the ledger for promotions + decays (run AFTER `ledger.py upsert candidates.json`),
          then route every candidate to: a per-skill APPLY bucket (LONG + high-confidence), the
          active-work bucket (SHORT), the review-queue (LONG + med/low, or new-skill), or drop.
+         `scope` decides the home first: `feature` claims are in-flight status and only ever reach
+         active-work; `topic` / `cross-cutting` learnings never do, even if a classifier marked them
+         short. Each bucket carries its skill's current size and budget so appliers avoid bloat.
 
   replay --config <cfg> --in <apply-plan.json> --out <annotated-apply-plan.json>
          Annotate a preserved plan with completed APPLY buckets from receipt files. Recovery skips
@@ -25,11 +28,13 @@ Subcommands:
          used as a proxy for per-plan completion.
 
 MAP output item shape (what each classifier sub-agent writes; same as ledger upsert):
-  { "claim","domain","horizon","importance","confidence","target","source","evidence","notes" }
+  { "claim","domain","scope","thread","signal","horizon","importance","confidence","target",
+    "source","evidence","notes" }
 
 stdlib only. Windows-friendly.
 """
 import argparse, glob as globmod, hashlib, json, os, re, subprocess, sys
+from collections import Counter
 from datetime import datetime, timezone
 
 
@@ -51,6 +56,21 @@ def fingerprint(claim):
 CONF_RANK = {"high": 3, "medium": 2, "low": 1}
 CONF_BY_RANK = {3: "high", 2: "medium", 1: "low"}
 HORIZON_RANK = {"drop": 0, "short": 1, "long": 2}
+DURABLE_SCOPES = ("topic", "cross-cutting")
+SCOPE_ALIASES = {"feature": "feature", "thread": "feature", "in-flight": "feature",
+                 "topic": "topic", "system": "topic", "component": "topic",
+                 "cross-cutting": "cross-cutting", "crosscutting": "cross-cutting",
+                 "general": "cross-cutting", "workflow": "cross-cutting"}
+
+
+def normalize_scope(value):
+    key = re.sub(r"[\s_]+", "-", (value or "").strip().lower())
+    return SCOPE_ALIASES.get(key)
+
+
+def cap_confidence(item, ceiling="medium"):
+    if CONF_RANK.get(item.get("confidence") or "low", 1) > CONF_RANK[ceiling]:
+        item["confidence"] = ceiling
 
 
 def merge_dupes(items):
@@ -62,19 +82,31 @@ def merge_dupes(items):
     # confidence: most conservative (min rank) across duplicates
     ranks = [CONF_RANK.get((x.get("confidence") or "low"), 1) for x in items]
     out["confidence"] = CONF_BY_RANK[min(ranks)]
+    scopes = {normalize_scope(x.get("scope")) for x in items} - {None}
+    if len(scopes) == 1:
+        out["scope"] = scopes.pop()
+    elif scopes:
+        # Shards disagree on whether this is in-flight status or durable knowledge: keep the durable
+        # reading so it cannot hide in active-work, but leave the final call to review.
+        out["scope"] = "topic" if "topic" in scopes else "cross-cutting"
+        cap_confidence(out)
     horizons = {(x.get("horizon") or "drop") for x in items}
     if len(horizons) == 1:
         out["horizon"] = horizons.pop()
     elif horizons == {"long", "short"}:
-        out["horizon"] = "short"  # do not auto-elevate to long on single-night disagreement
+        if out.get("scope") in DURABLE_SCOPES:
+            out["horizon"] = "long"
+            cap_confidence(out)
+        else:
+            out["horizon"] = "short"  # do not auto-elevate to long on single-night disagreement
     else:
         # a mix involving 'drop' -> keep the strongest non-drop but force review (cap conf medium)
         non_drop = [h for h in horizons if h != "drop"]
         out["horizon"] = max(non_drop, key=lambda h: HORIZON_RANK[h]) if non_drop else "drop"
-        if out["horizon"] != "drop" and CONF_RANK[out["confidence"]] > 2:
-            out["confidence"] = "medium"
-    # if resolved to short, home is active-work
-    if out["horizon"] == "short":
+        if out["horizon"] != "drop":
+            cap_confidence(out)
+    # an in-flight claim lives in active-work; a durable one keeps its reference-skill target
+    if out["horizon"] == "short" and out.get("scope") not in DURABLE_SCOPES:
         out["target"] = "dream-active-work"
     ev = sorted({(x.get("evidence") or "").strip() for x in items if x.get("evidence")})
     out["evidence"] = "; ".join(ev)[:400]
@@ -156,42 +188,83 @@ def build_target_map(cfg):
     return m
 
 
+def skill_on_disk(cfg, name):
+    """Path of an installed skill that is not configured as a routing target, or None."""
+    if not name or not re.match(r"^[\w.-]+$", name):
+        return None
+    skills_dir = expand((cfg.get("paths", {}) or {}).get("skills_dir", "~/.copilot/skills"))
+    path = os.path.join(skills_dir, name, "SKILL.md")
+    return path if os.path.isfile(path) else None
+
+
+def text_chars(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return len(f.read())
+    except (OSError, TypeError):
+        return 0
+
+
 def cmd_plan(cfg, args):
     cands = json.load(open(expand(args.candidates), encoding="utf-8"))
     tmap = build_target_map(cfg)
-    long_skills = set((cfg.get("targets", {}).get("long_term_skills", {}) or {}).keys())
+    targets_cfg = cfg.get("targets", {}) or {}
+    long_skills = set((targets_cfg.get("long_term_skills", {}) or {}).keys())
     # Cold-start seed: with no long-term skills configured yet, route durable facts to one auto-seeded
     # general skill (the orchestrator's bootstrap creates the file) instead of proposing every LONG claim.
     seed = cfg.get("seed", {}) or {}
+    seed_name = None
     if not long_skills and seed.get("enabled", True):
         gs = seed.get("general_skill", {}) or {}
         seed_name = gs.get("name")
         if seed_name:
             long_skills = {seed_name}
             tmap[seed_name] = expand(gs.get("path") or ("~/.copilot/skills/%s/SKILL.md" % seed_name))
-    keep_floor = cfg.get("thresholds", {}).get("importance_keep_floor", 4)
+    # Home for durable learnings that are not about one system (tools, workflows, preferences).
+    general_skill = targets_cfg.get("general_skill") or seed_name
+    if general_skill not in long_skills:
+        general_skill = None
+    th = cfg.get("thresholds", {}) or {}
+    keep_floor = th.get("importance_keep_floor", 4)
+    skill_budget = int(th.get("skill_budget_chars", 60000))
+    budget_overrides = th.get("skill_budget_overrides", {}) or {}
+    archive_dir = expand((cfg.get("paths", {}) or {}).get("archive_dir", "~/.copilot/dream/archive"))
+    today = datetime.now().strftime("%Y-%m-%d")
     # Hard user veto: fingerprints the user has explicitly rejected (via dream-reject.ps1 ->
     # ledger status='rejected') are force-dropped here, so a rejected proposal never resurfaces
     # even if its source session/commit is still in the harvest window and gets re-classified.
     rejected = {r.get("fingerprint") for r in ledger_query_strict(args.config, "dump", "--status", "rejected")
                 if r.get("fingerprint")}
 
+    aw_file = tmap.get("dream-active-work")
+    aw_chars = text_chars(aw_file)
+    aw_budget = int(th.get("active_work_budget_chars", 20000))
     plan = {
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "by_skill": {},          # skill_name -> {skill_file, claims:[...]}
-        "active_work": {"skill_file": tmap.get("dream-active-work"), "add": [], "remove_decayed": []},
+        "by_skill": {},          # skill_name -> {skill_file, claims:[...], size/budget}
+        "active_work": {"skill_file": aw_file, "add": [], "remove_decayed": [],
+                        "current_chars": aw_chars, "budget_chars": aw_budget,
+                        "max_threads": int(th.get("active_work_max_threads", 20)),
+                        "over_budget": aw_chars > aw_budget,
+                        "archive_file": os.path.join(archive_dir, "active-work-%s.md" % today)},
         "review_queue": [],      # claims needing a proposal file (med/low LONG, new-skill, unroutable)
         "drops_count": 0,
         "rejected_denied": 0,    # candidates force-dropped because the user rejected them before
+        "rerouted_to_reference": 0,  # durable learnings a classifier had aimed at active-work
         "totals": {},
     }
 
     def route_to_skill(name, claim, extra=None):
-        entry = plan["by_skill"].setdefault(name, {"skill_file": tmap.get(name), "claims": []})
+        if name not in plan["by_skill"]:
+            chars = text_chars(tmap.get(name))
+            budget = int(budget_overrides.get(name, skill_budget))
+            plan["by_skill"][name] = {"skill_file": tmap.get(name), "claims": [],
+                                      "current_chars": chars, "budget_chars": budget,
+                                      "over_budget": chars > budget}
         c = dict(claim)
         if extra:
             c.update(extra)
-        entry["claims"].append(c)
+        plan["by_skill"][name]["claims"].append(c)
 
     for c in cands:
         fp = c.get("fingerprint")
@@ -203,9 +276,28 @@ def cmd_plan(cfg, args):
         conf = c.get("confidence") or "low"
         target = c.get("target") or ""
         imp = c.get("importance") or 0
+        scope = normalize_scope(c.get("scope"))
         if horizon == "drop":
             plan["drops_count"] += 1
             continue
+        c = dict(c)
+        if scope:
+            c["scope"] = scope
+        if scope == "feature" and horizon == "long":
+            # in-flight specifics never enter a reference skill
+            horizon = c["horizon"] = "short"
+        elif scope in DURABLE_SCOPES and (horizon == "short" or target == "dream-active-work"):
+            # a learning that outlives the feature belongs in a reference skill, not active-work
+            horizon = c["horizon"] = "long"
+            if target in ("", "dream-active-work"):
+                if scope == "cross-cutting" and general_skill:
+                    target = general_skill
+                else:
+                    target = "review-queue"
+                    c["needs_target"] = True
+                c["target"] = target
+            c["rerouted_from_active_work"] = True
+            plan["rerouted_to_reference"] += 1
         if horizon == "short" or target == "dream-active-work":
             plan["active_work"]["add"].append(c)
             continue
@@ -218,9 +310,13 @@ def cmd_plan(cfg, args):
         if horizon == "long" and conf in ("medium", "low") and target in long_skills:
             plan["review_queue"].append(c)
             continue
-        # unknown/unresolvable target: propose as new skill if important + recurring-worthy, else queue
+        # target is not a configured routing target: an installed skill gets an ordinary proposal;
+        # an unknown one becomes a new-skill proposal if important enough, else a plain proposal
         item = dict(c)
-        if target not in long_skills and imp >= max(7, keep_floor):
+        existing = skill_on_disk(cfg, target)
+        if existing:
+            item["existing_skill_file"] = existing
+        elif imp >= max(7, keep_floor):
             item["new_skill"] = True
         plan["review_queue"].append(item)
 
@@ -238,6 +334,8 @@ def cmd_plan(cfg, args):
             route_to_skill(tgt, pc, {"promoted": True})
         else:
             pc["promoted"] = True
+            if tgt in ("", "dream-active-work"):
+                pc["needs_target"] = True
             plan["review_queue"].append(pc)
 
     # decays: stale active SHORT threads to remove from active-work
@@ -254,15 +352,27 @@ def cmd_plan(cfg, args):
         "review_queue": len(plan["review_queue"]),
         "drops": plan["drops_count"],
         "rejected_denied": plan["rejected_denied"],
+        "rerouted_to_reference": plan["rerouted_to_reference"],
+        "over_budget_skills": sorted(n for n, v in plan["by_skill"].items() if v.get("over_budget")),
+        # what the conversations yielded (question / correction / preference / decision / finding / status)
+        "signals": dict(Counter((c.get("signal") or "unspecified") for c in cands)),
     }
     with open(expand(args.out), "w", encoding="utf-8") as f:
         json.dump(plan, f, indent=2, ensure_ascii=False)
-    print("PLAN OK  " + "  ".join("%s=%s" % (k, v) for k, v in plan["totals"].items()))
+    print("PLAN OK  " + "  ".join("%s=%s" % (k, v) for k, v in plan["totals"].items()
+                                  if not isinstance(v, (dict, list))))
     for name, v in plan["by_skill"].items():
-        print("  APPLY %-32s claims=%d -> %s" % (name, len(v["claims"]), v["skill_file"]))
-    print("  ACTIVE-WORK add=%d remove=%d" % (plan["totals"]["active_add"], plan["totals"]["active_remove"]))
-    print("  REVIEW-QUEUE items=%d   DROPS=%d (rejected-denied=%d)"
-          % (plan["totals"]["review_queue"], plan["totals"]["drops"], plan["rejected_denied"]))
+        print("  APPLY %-32s claims=%d size=%d/%d%s -> %s"
+              % (name, len(v["claims"]), v["current_chars"], v["budget_chars"],
+                 " OVER-BUDGET" if v["over_budget"] else "", v["skill_file"]))
+    aw = plan["active_work"]
+    print("  ACTIVE-WORK add=%d remove=%d size=%d/%d%s"
+          % (plan["totals"]["active_add"], plan["totals"]["active_remove"], aw["current_chars"],
+             aw["budget_chars"], " OVER-BUDGET" if aw["over_budget"] else ""))
+    print("  REVIEW-QUEUE items=%d   DROPS=%d (rejected-denied=%d)   REROUTED-TO-REFERENCE=%d"
+          % (plan["totals"]["review_queue"], plan["totals"]["drops"], plan["rejected_denied"],
+             plan["rerouted_to_reference"]))
+    print("  SIGNALS %s" % json.dumps(plan["totals"]["signals"], sort_keys=True))
     print("PLAN FILE: %s" % expand(args.out))
 
 

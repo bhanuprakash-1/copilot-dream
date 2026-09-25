@@ -8,7 +8,7 @@
     (%USERPROFILE%\.copilot\), seeds config.json and inbox.md from the shipped
     templates, and initializes the SQLite ledger. The script is idempotent and
     never deletes or overwrites your data: config.json, ledger.db, state.json,
-    inbox.md, journal/, review-queue/, harvest/ and logs/ are always preserved.
+    inbox.md, journal/, review-queue/, harvest/, logs/ and archive/ are always preserved.
 
 .PARAMETER Force
     Overwrite the dream / dream-active-work skill folders if they already exist.
@@ -54,7 +54,7 @@ if ($Force) { Write-Info 'mode       : -Force (existing skills will be overwritt
 
 # Data we must never overwrite or delete.
 $ProtectedFiles = @('config.json','ledger.db','ledger.db-wal','ledger.db-shm','ledger.db-journal','state.json','inbox.md')
-$ProtectedDirs  = @('journal','review-queue','harvest','logs')
+$ProtectedDirs  = @('journal','review-queue','harvest','logs','archive')
 
 # --- 2. Copy engine\* -> ~\.copilot\dream\ -----------------------------------
 Write-Step 'Installing engine'

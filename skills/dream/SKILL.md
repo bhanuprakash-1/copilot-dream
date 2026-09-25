@@ -31,8 +31,12 @@ Do not put detail here - put it in the target skill and link it. Maintained nigh
 ## How my knowledge is maintained
 - **Long-term** (durable architecture, playbooks, repo map, conventions) -> the reference skills above.
 - **Short-term** (active threads, in-flight work) -> `dream-active-work`, with automatic decay.
-- The **Dream** (a nightly headless Copilot run) harvests my recent sessions + git and refines these
-  skills; it drops one-off noise and only promotes recurring facts to long-term.
+- The **Dream** (a nightly headless Copilot run) mines my recent conversations (prompts, answers, the
+  back-and-forth) + git and refines these skills: learnings that outlive a feature go to the reference
+  skills at their level of generality, only live status stays in `dream-active-work`, and noise is dropped.
+- `~/.copilot/dream/config.json` -> `model_policy` pins the cost-conscious model (currently `gpt-5.6-sol`)
+  for every orchestrator, sub-agent and retry: explicitly use `long_context` and `xhigh`
+  reasoning. Never inherit weaker tool defaults.
 
 ## Feeding the Dream a note
 Any of these land in `~/.copilot/dream/inbox.md` and get classified on the next nightly run:

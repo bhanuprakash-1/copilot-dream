@@ -5,15 +5,19 @@ Configured in `config.json → sources`. Each source is independent; one failing
 
 | Source | Where | What's captured |
 |---|---|---|
-| CLI sessions | `~/.copilot/session-store.db` (read-only) | `sessions` updated in window + their `turns` (user msg full, assistant truncated to 1.6 KB), plus `session_files`, `session_refs`. Empty sessions skipped. |
+| CLI sessions | `~/.copilot/session-store.db` (read-only) + `~/.copilot/session-state/<id>/events.jsonl` | Sessions updated in the window. Each one's **main-thread conversation** is rebuilt from its event log: every user prompt, the agent's `interim` commentary and `final` answers (with the tools it ran in that turn), compaction `summary` entries, delegated sub-agent tasks and skills used. Only entries newer than the window start are kept (a long-running session is not re-classified in full each night); `prior_context` (the last earlier compaction summary, or the opening prompt) orients the classifier. Sub-agent internals, injected skill bodies, system notifications and bare slash commands are excluded, obvious secrets are redacted, and each session is capped at `session_budget_chars` (commentary is trimmed first). Sessions without an event log fall back to the store's `turns` + `checkpoints`. `session_files` / `session_refs` are window-filtered too. |
 | Git commits | git roots under your configured repo roots (auto-detected) | commits authored by you (`git config user.email/name`) since the window, with `--name-only` file lists, `--no-merges`. |
-| Inbox | `~/.copilot/dream/inbox.md` | freeform notes below the marker line. |
+| Inbox | `~/.copilot/dream/inbox.md` | freeform notes below the marker line. Notes persist until you delete them and act as standing guidance: every MAP and APPLY sub-agent reads them each night. |
 
 Output: `harvest/harvest-<stamp>.json` (machine) + `.md` (human) + `harvest/latest.json` (stable pointer).
 
 ### The harvest window (watermark)
-`state.json` stores `last_run_utc`. Next window = `now − (hours_since_last_run + 1h margin)`, floored at
-`window.default_hours` (30) and capped at `window.max_hours` (72). First run uses 30h. The watermark only
+`state.json` stores `last_run_utc` — the successful run's harvest **cutoff** (taken before any source is read,
+not when the run finished, so sessions updated while it ran fall inside the next window). The next window
+starts at that cutoff minus `window.overlap_minutes` (15 — events can reach disk shortly after their
+timestamp), capped at `window.max_hours` (168, so a multi-night outage is recovered on the next good run).
+Only a first run uses `window.default_hours` (30). Within a session only entries newer than the window start
+are harvested, so the same conversation is not re-classified night after night. The watermark only
 advances when both the dated journal and the final `completion/run-<date>-<session>.json` marker were
 written during the run. Copilot process exit code 0 alone is not success. A failed night therefore leaves
 the watermark untouched and is retried (safely — the ledger dedups).
@@ -40,13 +44,18 @@ live in a per-run scratch dir `harvest/shards/<stamp>/` (stable pointer: `harves
 
   | Bucket | Rule |
   |---|---|
-  | `by_skill[<name>]` | `horizon=long` + `confidence=high` + `target` is a known reference skill → one APPLY sub-agent per skill |
-  | `active_work.add` | `horizon=short` (or `target=dream-active-work`) |
+  | `by_skill[<name>]` | `horizon=long` + `confidence=high` + `target` is a known reference skill → one APPLY sub-agent per skill. Carries `current_chars`, `budget_chars`, `over_budget`. |
+  | `active_work.add` | `horizon=short` (or `target=dream-active-work`). Carries the active-work size, budget, `max_threads` and `archive_file`. |
   | `active_work.remove_decayed` | from `ledger.py decays` |
-  | `review_queue` | `long` + med/low confidence, unroutable targets, or (importance ≥ 7) new-skill proposals |
+  | `review_queue` | `long` + med/low confidence, unroutable targets, or (importance ≥ 7) new-skill proposals. Installed skills that aren't configured targets get `existing_skill_file` (an ordinary proposal, not a new skill); claims with no reference-skill home get `needs_target`. |
   | `drops_count` | `horizon=drop` (already recorded by the upsert) |
 
-  `plan` also folds in `ledger.py promotions` (recurring shorts that earned long-term status).
+  Before routing, `plan` enforces `scope`: a `feature` claim is always short (active-work only), and a
+  `topic` / `cross-cutting` claim is always long — if a classifier aimed it at active-work it is rerouted to
+  `targets.general_skill` (cross-cutting) or review (`rerouted_to_reference` counts these).
+  `plan` also folds in `ledger.py promotions` (recurring shorts that earned long-term status; feature-scoped
+  status never promotes) and reports `totals.signals` (question / correction / preference / decision /
+  finding / status) for the journal.
 
 All of `shard-NN.json`, `claims-NN.json`, `candidates.json`, `apply-plan.json`, and `manifest.json` are
 normally scratch — git-ignored, retained for the last ~10 nights by `run-dream.ps1`, and fully reproducible
@@ -70,6 +79,9 @@ preserved `pending/apply-plan-*.json` files are valid `-ReplayPlan` inputs.
 | `fingerprint` (PK) | sha1 of the normalized claim text — the dedup/idempotence key. |
 | `claim` | the durable, generally-worded fact/pattern/decision (never "what I did today"). |
 | `domain` | your project/area tags, e.g. `acme-api` \| `platform` \| `dev-workflow` \| `off-domain`. |
+| `scope` | `feature` (in-flight status) \| `topic` (durable, about one system) \| `cross-cutting` (durable, not about one system). Decides the home; feature-scoped items never promote. |
+| `thread` | for `feature` items: the branch / feature slug that groups them into one active-work entry. |
+| `signal` | what the conversation yielded: `question` \| `correction` \| `preference` \| `decision` \| `finding` \| `status`. |
 | `horizon` | `long` \| `short` \| `drop`. |
 | `importance` | 1–10 (would this help me in 6 months, in a different session?). |
 | `confidence` | `high` \| `medium` \| `low` — gates auto-apply vs review-queue. |
@@ -87,11 +99,11 @@ preserved `pending/apply-plan-*.json` files are valid `-ReplayPlan` inputs.
 
 ### Deterministic ledger operations (called by the Dream, not hand-written SQL)
 ```
-python ledger.py init
+python ledger.py init                           # creates/migrates the schema; records old 'active' drops as 'dropped'
 python ledger.py stats
-python ledger.py upsert --json items.json     # bumps hit_count / distinct_days for repeats
-python ledger.py promotions                    # SHORT items with hit_count>=3 over >=3 distinct days
-python ledger.py decays                         # active SHORT items past decay_days (14)
+python ledger.py upsert --json items.json     # bumps hit_count / distinct_days for repeats; new drops are 'dropped'
+python ledger.py promotions                    # non-feature SHORT items with hit_count>=3 over >=3 distinct days
+python ledger.py decays                         # live (active or applied) SHORT items past decay_days (14)
 python ledger.py set-status --fingerprint F --status applied|proposed|archived|dropped|active|rejected
 python ledger.py record-run --json run.json
 python ledger.py dump [--status active] [--horizon short]
@@ -179,6 +191,22 @@ Approving applies the `## After` edit to `target` then records the item `applied
 | `decay_days` | 14 | active short items older than this are archived |
 | `auto_apply_min_confidence` | `high` | below this, long-term edits go to review-queue |
 | `importance_keep_floor` | 4 | below this, drop unless part of an active thread |
+| `skill_budget_chars` | 60000 | soft size cap per reference skill; an APPLY edit to a skill over it must not grow the file (merge/tighten, never lose a fact) |
+| `skill_budget_overrides` | `{}` | per-skill caps, e.g. `{"service-architecture": 90000}` |
+| `active_work_budget_chars` | 20000 | size cap for `dream-active-work`; above it (or above `active_work_max_threads`) the file is compacted and removed text is archived under `paths.archive_dir` |
+| `active_work_max_threads` | 20 | most threads `dream-active-work` keeps as full entries |
+
+## Runner (config.json → runner)
+| Key | Default | Effect |
+|---|---|---|
+| `disable_mcp_servers` | `true` | launch the headless run with `--disable-mcp-server` for every server `copilot mcp list` reports, plus `--disable-builtin-mcps`. The Dream needs only local tools, and unattended OAuth-backed servers can abort startup ("Managed MCP policy settlement failed before MCP discovery"). |
+| `keep_mcp_servers` | `[]` | servers to leave enabled (only if your prompt really needs one). |
+| `max_attempts` | 2 | attempts per run. A failed attempt is retried with a fresh session only if it applied nothing (no fresh `apply-plan.json`, no receipts); otherwise its plan is preserved for replay. |
+| `retry_backoff_seconds` | 120 | wait before a retry. |
+| `total_budget_minutes` | 170 | no retry starts unless it can finish (at `-TimeoutMinutes`) inside this budget — keep it under the scheduler's limit (the shipped task allows 3h). |
+
+Every failed attempt logs a one-line `failure-reason:` (the CLI's fatal error, a timeout, or "wrote tool calls
+as plain text") to `logs/run-<date>.log`; `dream-status.ps1` surfaces it.
 
 ## Read-only reference context (config.json → read_only_context)
 The Dream can **consult, read-only,** your own repos' agent guidance so extracted knowledge aligns with each
@@ -189,6 +217,7 @@ your personal skills. It never edits these files. Optional; leave the arrays emp
 |---|---|
 | `agent_instruction_globs` | Globs pointing at your repos' agent-instruction files — e.g. `.github/copilot-instructions.md`, `AGENTS.md`, `.github/instructions/*.md`. During MAP, a classifier sub-agent reads the file(s) whose path matches its shard's repo and treats them as that repo's authoritative conventions/protocol. |
 | `repo_skill_dirs` | Directories holding in-repo skills (e.g. `<repo>/.github/skills`). Knowledge that belongs to these is referenced, not copied into a personal skill. |
+| `personal_instruction_globs` | Your global Copilot instruction files (e.g. `~/.copilot/copilot-instructions.md`, `~/.copilot/instructions/*.md`). Every MAP classifier reads them, so a preference already stated there is never re-captured into a skill. |
 | `read_caps.max_files_per_shard` | Cap on how many matching files one MAP sub-agent reads (default 12). |
 | `read_caps.max_chars_per_file` | Per-file read cap, in characters (default 20000). |
 

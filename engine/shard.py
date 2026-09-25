@@ -67,8 +67,10 @@ def est_tokens_text(s):
 
 
 def est_session_tokens(se):
-    t = est_tokens_text(se.get("summary"))
-    for tn in se.get("turns", []):
+    t = est_tokens_text(se.get("summary")) + est_tokens_text(se.get("prior_context"))
+    for entry in se.get("dialogue", []) or []:
+        t += est_tokens_text(entry.get("text"))
+    for tn in se.get("turns", []) or []:  # snapshots written before dialogue harvesting
         t += est_tokens_text(tn.get("user")) + est_tokens_text(tn.get("assistant"))
     return t
 
@@ -170,6 +172,7 @@ def main():
             "file": fp,
             "kind": kind,
             "n_sessions": len(sessions_subset),
+            "n_prompts": sum((s.get("counts") or {}).get("user", 0) for s in sessions_subset),
             "n_commits": sum(len(g.get("commits", [])) for g in git_subset),
             "est_tokens": est,
             "session_ids": [s.get("id", "")[:8] for s in sessions_subset],

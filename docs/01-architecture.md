@@ -23,14 +23,14 @@ flowchart TD
 
     subgraph L1["Layer 1 — Harvest (deterministic, Python)"]
       HARVEST["harvest.py"]
-      S1[(session-store.db<br/>sessions + turns)] --> HARVEST
+      S1[(session-state events.jsonl<br/>prompts, answers, summaries)] --> HARVEST
       S2[git commits<br/>across your repos] --> HARVEST
       S3[inbox.md] --> HARVEST
       HARVEST --> SNAP["harvest/latest.json<br/>+ .md digest"]
     end
 
     SNAP --> SHARD["shard.py<br/>balanced, thread-grouped shards"]
-    RUN -->|copilot -p, opus-4.8/gpt-5.6-sol<br/>long_context + max| BRAIN
+    RUN -->|copilot -p, gpt-5.6-sol<br/>long_context + xhigh| BRAIN
 
     subgraph Brain["Layers 2-5 — Consolidation (lean orchestrator + parallel sub-agents)"]
       BRAIN["dream-consolidation.prompt.md<br/>(lean orchestrator)"]
@@ -54,8 +54,11 @@ flowchart TD
 ## Why this structure
 
 ### Deterministic harvest, probabilistic consolidation
-The **harvest is code** (Python over SQLite + git) so it's cheap, reproducible, and never hallucinates the
-inputs. The **consolidation is the model** because classification/dedup/refinement need judgment. The model
+The **harvest is code** (Python over SQLite, the CLI's per-session event logs, and git) so it's cheap,
+reproducible, and never hallucinates the inputs. It rebuilds each conversation — the user's prompts, the
+agent's commentary and answers, compaction summaries — so the classifiers can learn from the back-and-forth
+(questions, corrections, stated preferences), not just from final outcomes. The **consolidation is the model**
+because classification/dedup/refinement need judgment. The model
 never has to *find* the raw material — `harvest.py` hands it a compact snapshot.
 
 ### The ledger is what prevents pollution and enables decay
@@ -69,16 +72,20 @@ properties a stateless pass can't have:
 ### Two horizons, two homes
 | Horizon | Home | Lifecycle |
 |---|---|---|
-| **Long-term** (architecture, topology, playbooks, repo map, conventions) | reference skills (`team-resources`, `service-architecture`, `deployment-runbook`, `telemetry-queries`, …) | refined in place, deduped, rarely removed |
-| **Short-term** (active feature, open PR, ongoing investigation, live finding) | `dream-active-work` | refreshed while active, archived on decay |
-| **Noise** (one-off bug, machine chatter, off-domain personal, automation transcripts) | *dropped* | never written |
+| **Long-term** (architecture, topology, playbooks, repo map, conventions — anything that outlives the feature it was found in) | reference skills (`team-resources`, `service-architecture`, `deployment-runbook`, `telemetry-queries`, …); cross-cutting lessons go to `targets.general_skill` | refined in place, deduped, rarely removed; kept at each skill's level of generality and within its size budget |
+| **Short-term** (the live status of an active feature, open PR, ongoing investigation) | `dream-active-work` | refreshed while active, archived on decay; compacted (removed text archived) when over budget |
+| **Noise** (one-off bug, machine chatter, off-domain personal, automation transcripts, instance detail no skill is about) | *dropped* | never written |
+
+A claim's `scope` (`feature` / `topic` / `cross-cutting`) decides its horizon, and `reduce.py` enforces it, so
+learnings discovered during a feature still reach the reference skills instead of piling up in short-term memory.
 
 ### Model policy
-Only `claude-opus-4.8` or `gpt-5.6-sol`, both `--context long_context` (1M) `--effort max` — and every
-sub-agent runs on that same model. The 1M window is the ceiling, not the operating point: the map-reduce
-structure below keeps each agent working in a small, clean slice of it. Max reasoning is worth it for the
-judgment-heavy classification and in-place editing. `run-dream.ps1` refuses any other model (PowerShell
-`ValidateSet`); `config.model_policy` is the single source of truth for the allowed set.
+`config.model_policy` pins the cost-conscious model: `gpt-5.6-sol`, `long_context` (~1M tier),
+and `xhigh` reasoning. Every sub-agent, nested worker and retry explicitly requests that same
+configuration; `max`, `high`, and default context are not permitted. The large window
+is the ceiling, not the operating point: map-reduce keeps each agent's actual input small.
+`resolve-model-policy.ps1` validates the allow-list and reasoning/context floors before the runner
+harvests anything. An unavailable configuration is a reported failure, not permission to downgrade.
 
 ### Map-reduce execution model (why parallel sub-agents)
 A 1M context window is necessary but not sufficient. In practice an agent's output quality starts to

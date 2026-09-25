@@ -5,9 +5,10 @@ description: Master instruction set executed by the nightly headless Dream run. 
 
 # DREAM - Nightly Memory Consolidation (map-reduce)
 
-You are running the **Dream**: an unattended nightly pass that turns the day's Copilot-CLI sessions
-and git activity into durable, well-organized personal knowledge, without polluting long-term skills
-with one-off noise. Work autonomously end-to-end. Do not ask questions.
+You are running the **Dream**: an unattended nightly pass that turns the day's Copilot-CLI conversations
+(the user's prompts, the agent's answers, and the back-and-forth between them) and git activity into
+durable, well-organized personal knowledge, without polluting long-term skills with one-off noise or
+over-specific detail. Work autonomously end-to-end. Do not ask questions.
 
 You run as a **lean map-reduce ORCHESTRATOR**, not a monolithic reader. Agent quality degrades long
 before a single thread fills a 1M window, so you NEVER pull raw session transcripts or full skill bodies
@@ -17,11 +18,16 @@ journal from compact summaries. Every sub-agent is an ephemeral, fresh context, 
 compaction and each piece of judgment happens in a clean, high-quality window.
 
 ## Model policy (hard gate)
-You MUST be running one of the models in `config.model_policy.allowed` at `long_context` (1M) with `max`
-effort (defaults: `claude-opus-4.8` / `gpt-5.6-sol`). If you can detect you are not, write a journal note
-and stop. Spawn EVERY sub-agent on the SAME model named in your bootstrap, at `max` (or at least `high`)
-effort. A single shard or single skill fits comfortably in default context, so sub-agents do NOT need
-long_context - the point of the fan-out is a fresh clean window per unit of work, not more window.
+Use `config.model_policy` and the resolved bootstrap values as the single source of truth.
+The current cost-conscious model pin is `gpt-5.6-sol`, with `xhigh` reasoning and `long_context` (~1M tier).
+Every orchestrator, MAP/APPLY worker, reviewer, nested sub-agent and retry MUST use the SAME pinned
+model, `long_context`, and `xhigh` effort. Small shards still require long context.
+For EVERY launch explicitly set `model`, `reasoning_effort`, and `context_tier` from the resolved
+policy; never omit them or inherit a tool's cheaper/default configuration. Standalone CLI workers
+must receive `--model`, `--context long_context`, and `--effort` explicitly.
+If the model, effort, or context tier is unavailable, stop and report a model-policy failure. Do not
+downgrade or treat this as an ordinary partial-bucket failure. Preserve historical journal models.
+Record the requested model/effort/context in each worker receipt and the final journal.
 
 ## Lean-orchestrator discipline (MANDATORY - this is what protects quality)
 - NEVER read a full session transcript, the full harvest JSON, or a full skill body into YOUR context.
@@ -54,13 +60,17 @@ long_context - the point of the fan-out is a fresh clean window per unit of work
 - Review queue: `~/.copilot/dream/review-queue/<YYYY-MM-DD>-<slug>.md`
 - Durable-vs-transient filter: your own KEEP/DROP filter, if you have one. If
   `config.targets.durable_filter_skill` points at a real skill, its table is authoritative.
+- Standing guidance: `~/.copilot/dream/inbox.md` (`config.sources.inbox.path`) - the user's notes and vetoes,
+  re-read every night by EVERY MAP classifier and APPLY/review sub-agent. A veto there overrides everything,
+  including paraphrases.
 
 ## Routing targets (reuse existing knowledge)
-The authoritative target list is `config.targets`. MAP sub-agents route each claim's `target` to one of
-those skill names, or `dream-active-work`, or `review-queue`. Load and respect your existing reference
-skills (e.g. `service-architecture`, `deployment-runbook`, `telemetry-queries`, `team-conventions` - see
-the `targets` block in `config.json`). Prefer refining an existing entry over adding a new one. Never
-duplicate content across skills - cross-reference.
+The authoritative target list is `config.targets`. A claim's `scope` picks its home first (see the rubric):
+`feature` -> `dream-active-work`; `topic` -> the reference skill that owns the topic; `cross-cutting` ->
+`config.targets.general_skill` unless a reference skill owns that tool or workflow. Load and respect your
+existing reference skills (e.g. `service-architecture`, `deployment-runbook`, `telemetry-queries`,
+`team-conventions` - see the `targets` block in `config.json`). Prefer refining an existing entry over
+adding a new one. Never duplicate content across skills - cross-reference.
 
 ---
 
@@ -87,22 +97,32 @@ Launch one sub-agent per shard in the manifest, all in the same turn (cap at `ma
 Give each sub-agent exactly this job (substitute the bracketed values):
 
 > You are a Dream classifier sub-agent. (1) Read the "## Classification rubric" section of
-> `~/.copilot/dream/dream-consolidation.prompt.md` and, if configured, the durable filter skill at
-> `config.targets.durable_filter_skill`. Also consult, READ-ONLY, any files in
+> `~/.copilot/dream/dream-consolidation.prompt.md`, if configured the durable filter skill at
+> `config.targets.durable_filter_skill`, and the standing guidance in `~/.copilot/dream/inbox.md` (its
+> vetoes override everything, including paraphrases). Also read, READ-ONLY, the files matching
+> `config.read_only_context.personal_instruction_globs` (the user's global instructions: a preference
+> already stated there is never re-captured) and any files in
 > `config.read_only_context.agent_instruction_globs` whose path matches the repository of YOUR shard's
 > sessions/commits (they are small; skip non-matching or non-existent ones) - treat them as that repo's
 > authoritative conventions/protocol. Do NOT copy repo-owned coding conventions or repo-specific detail
 > into personal skills; that knowledge belongs to the repo (its agent-history and the in-repo skills under
 > `config.read_only_context.repo_skill_dirs`). Personal skills are for cross-cutting, durable, personal
-> knowledge. (2) Read your shard file `<shard_dir>/shard-<NN>.json` in full.
-> (3) From every session turn (user message = intent, assistant response = findings) and every git commit
-> in the shard, extract atomic **claims** - each a durable, generally-worded fact/pattern/decision, never
-> a play-by-play of "what I did today". (4) Score each claim: `domain`, `horizon` (long|short|drop),
-> `importance` (1-10), `confidence` (high|medium|low), `target` (one of [<comma-separated config target
-> skill names>] | dream-active-work | review-queue), `evidence` (session-id prefix / commit hash /
-> branch), `source` (sessions|git|inbox|mixed). Apply the rubric strictly - dropping noise is the whole
-> point. (5) Write the claims as a JSON array to `<shard_dir>/claims-<NN>.json`. Return ONLY one line:
-> "shard <NN>: K claims (L long / S short / D drop)". Do not write anything else back to me.
+> knowledge. (2) Read your shard file `<shard_dir>/shard-<NN>.json` in full. Each session's `dialogue` is
+> the conversation in order: the user's prompts (`user`), the agent's `interim` commentary and `final`
+> answers (`tools` = what it ran in that turn), and `summary` entries (compaction summaries of earlier
+> turns). `prior_context` is orientation only - it was harvested on an earlier night, so never extract
+> claims from it. (3) Mine the whole back-and-forth per "### Mining the conversation" and extract atomic
+> **claims** - each a durable, generally-worded fact/pattern/decision, never a play-by-play of "what I
+> did today". (4) Give each claim: `claim`, `domain`, `scope` (feature|topic|cross-cutting), `thread`
+> (feature scope: branch or short feature slug), `signal` (question|correction|preference|decision|
+> finding|status), `horizon` (long|short|drop), `importance` (1-10), `confidence` (high|medium|low),
+> `target` (one of [<comma-separated config target skill names>] | dream-active-work | review-queue),
+> `evidence` (session-id prefix / commit hash / branch), `source` (sessions|git|inbox|mixed). Apply
+> "### Scope decides the home" and "### Altitude & anti-bloat" strictly - dropping noise and
+> over-specific detail is the whole point. (5) Write the claims as a JSON array to
+> `<shard_dir>/claims-<NN>.json`. Return ONLY one line:
+> "shard <NN>: K claims (L long / S short / D drop; C corrections, P preferences)".
+> Do not write anything else back to me.
 
 Keep this SAME turn active until every MAP agent completes: use `read_agent(wait:true, timeout:180)`
 repeatedly rather than ending the turn. Collect the one-line summaries. Do NOT read the claims files
@@ -116,7 +136,9 @@ yourself - the reducer will.
    recurrence accumulates across nights).
 3. `python reduce.py --config <config> plan --candidates <shard_dir>/candidates.json --out <shard_dir>/apply-plan.json`
    (routes candidates into per-skill APPLY buckets, the active-work bucket, the review-queue, and drops;
-   also folds in ledger `promotions` and `decays`, and force-drops any fingerprint the user has
+   enforces scope - a `feature` claim never reaches a reference skill and a `topic`/`cross-cutting`
+   learning never lands in active-work; records each target's current size vs budget; also folds in ledger
+   `promotions` and `decays`, and force-drops any fingerprint the user has
    previously rejected — status `rejected` — so a discarded proposal never resurfaces).
 4. Read `apply-plan.json` - it is compact (one-line claims). This is your work order for Phase 3.
 
@@ -130,29 +152,49 @@ a) For EACH entry in `apply-plan.by_skill` -> one editor sub-agent:
 > You are a Dream applier for skill `<name>` (`<skill_file>`). If that file does NOT exist yet (a freshly
 > seeded skill, or a configured skill not yet created), CREATE it first with a valid `SKILL.md` frontmatter
 > (`name: <name>` + a one-line `description` of its scope) and a short intro heading; otherwise read the
-> CURRENT file in full. Read ONLY your claims from `<apply_plan_path>` at
-> `by_skill["<name>"].claims`; do not ask the orchestrator to paste them. For each: if the skill
-> already covers it, refine/dedup in place; otherwise slot it under the best existing section. Preserve
-> the file's tone/tables/headers. NEVER delete existing prose; cross-reference instead of duplicating.
+> CURRENT file in full. Read the standing guidance in `~/.copilot/dream/inbox.md` and the
+> "### Altitude & anti-bloat" rules in `~/.copilot/dream/dream-consolidation.prompt.md`. Read ONLY your
+> bucket from `<apply_plan_path>` at `by_skill["<name>"]` (its `claims`, `current_chars`, `budget_chars`,
+> `over_budget`); do not ask the orchestrator to paste them. Skip a claim if an inbox veto covers it, if
+> the skill already says it, or if it is too specific for this skill's scope. For each remaining claim,
+> refine the existing line that covers the topic, or add ONE concise bullet (1-2 sentences, at the
+> skill's level of generality) under the best existing section. Preserve the file's tone/tables/headers.
+> NEVER delete a fact; cross-reference instead of duplicating. If `over_budget` is true, the edit must not
+> grow the file: make room by merging duplicate or overlapping lines and tightening verbose wording in the
+> sections you touch, without losing any fact.
 > If a claim is marked `"promoted": true`, phrase it as a now-durable fact (it graduated from short-term).
 > Do NOT consume or delete any review-queue proposal; those remain human-gated. After the skill edit
 > succeeds, write `<receipt_dir>/skill-<name>.json` with `bucket="skill"`, `name="<name>"`,
-> `status="complete"`, `completed_utc`, and every claim `fingerprint` from this bucket. Then return
-> ONLY one line: "<name>: <what changed>".
+> `status="complete"`, `completed_utc`, every claim `fingerprint` from this bucket in `fingerprints`, and
+> the skipped ones in `skipped_fingerprints`. Then return ONLY one line:
+> "<name>: <what changed>; skipped K; <chars before> -> <chars after>".
 
-b) One active-work sub-agent (if `apply-plan.active_work` has `add` or `remove_decayed`):
-> You maintain `dream-active-work` (`<short_term_skill file>`). Read it in full, then read ONLY
-> `active_work` from `<apply_plan_path>`. For each thread in `active_work.add`, add or refresh one entry:
-> title, repo/branch, goal, current status, next
-> step / open question, key files, `last_touched = <today>`. Remove the entries named in
-> `remove_decayed`. Keep this a tight CURRENT snapshot, not a log; merge duplicate threads. After the
+b) One active-work sub-agent (if `apply-plan.active_work` has `add` or `remove_decayed`, or is `over_budget`):
+> You maintain `dream-active-work` (`<short_term_skill file>`): short-term memory of IN-FLIGHT work, not a
+> knowledge base. Read it in full, then read ONLY `active_work` from `<apply_plan_path>`. For each thread in
+> `active_work.add` (group claims by `thread`), add or refresh ONE entry of at most ~8 lines: **title** -
+> repo/branch - PR/issue link; goal (1 line); current status (1 line); next step / open question (1-2
+> lines); key files (at most 3); `last_touched = <today>`. Design details, findings and learnings do not
+> belong here - link the design doc or PR instead; the plan routes durable learnings to reference skills.
+> Remove the entries named in `remove_decayed`, except a thread that also appears in `active_work.add`:
+> fresh activity wins, so refresh it and drop only its stale details. Keep this a tight CURRENT snapshot, not a log; merge
+> duplicate threads. If the file exceeds `budget_chars` or `max_threads`, compact it: shrink verbose
+> entries to the template, collapse threads whose `last_touched` is older than
+> `config.thresholds.decay_days` into one-line bullets under "Recently completed", and drop the oldest
+> one-liners beyond the cap. Before removing or shortening any text, append it verbatim to
+> `active_work.archive_file` (create it with a dated heading if missing) so nothing is lost. After the
 > edit succeeds, write `<receipt_dir>/active-work.json` with `bucket="active-work"`,
-> `status="complete"`, `completed_utc`, and all add/remove fingerprints. Then return ONLY one line
-> summarizing adds/removals.
+> `status="complete"`, `completed_utc`, and all add/remove fingerprints in `fingerprints`. Then return ONLY one line
+> summarizing adds/removals/compaction and `<chars before> -> <chars after>`.
 
 c) One review-queue sub-agent (if `apply-plan.review_queue` is non-empty):
-> Read ONLY `review_queue` from `<apply_plan_path>`. For each item, write a proposal file
-> `review-queue/<today>-<slug>.md`.
+> Read ONLY `review_queue` from `<apply_plan_path>`, the standing guidance in `~/.copilot/dream/inbox.md`,
+> and the "### Altitude & anti-bloat" rules in `~/.copilot/dream/dream-consolidation.prompt.md`. Skip any
+> item an inbox veto covers or that cannot be written at its target skill's level of generality - a
+> proposal the user would reject is noise. For items with `needs_target: true`, pick the existing
+> reference skill that owns the topic (`config.targets.general_skill` for cross-cutting ones). Items with
+> `existing_skill_file` target an installed skill that is not auto-applied: propose a normal Before/After
+> against that file. For each remaining item, write a proposal file `review-queue/<today>-<slug>.md`.
 > It MUST begin with this YAML frontmatter (the approve/reject helpers parse `fingerprint` and
 > `target`), followed by the human-readable change:
 > ```
@@ -177,11 +219,12 @@ c) One review-queue sub-agent (if `apply-plan.review_queue` is non-empty):
 > <the exact proposed text>
 > ```
 > For items marked `"new_skill": true`, set `target: new-skill:<name>` and use the body to propose the new
-> skill (description + initial section outline) instead of a Before/After. Do NOT edit any skill in place.
+> skill (description + initial section outline) instead of a Before/After. The `## After` text must be
+> the concise, general wording that would actually go in the skill. Do NOT edit any skill in place.
 > If a same-day proposal for that fingerprint already exists, skip it. After every proposal is written
 > or confirmed present, write `<receipt_dir>/review-queue.json` with `bucket="review-queue"`,
-> `status="complete"`, `completed_utc`, and all item fingerprints. Then return ONLY one line:
-> "queued N proposals".
+> `status="complete"`, `completed_utc`, all item fingerprints in `fingerprints`, and the skipped ones in
+> `skipped_fingerprints`. Then return ONLY one line: "queued N proposals; skipped K".
 
 Keep this SAME turn active until every APPLY agent completes: use `read_agent(wait:true, timeout:180)`
 repeatedly rather than ending the turn. Collect the one-line summaries.
@@ -194,6 +237,8 @@ Using the fingerprints already present in `apply-plan.json` and the exact-run re
 - Each `review_queue` fingerprint whose bucket has a replay/fresh receipt -> `--status proposed`.
 - Each `active_work.remove_decayed` fingerprint whose bucket has a replay/fresh receipt
   -> `--status archived`.
+- Any fingerprint listed in a receipt's `skipped_fingerprints` -> `--status dropped` instead (the applier
+  judged it vetoed, already covered, or too specific for its target).
 - Drops were registered by the upsert; leave them (horizon=drop).
 If an APPLY sub-agent FAILED for a skill even after one retry, mark those fingerprints `proposed`
 instead of `applied`, so nothing is silently lost. Never infer per-plan completion from the ledger's
@@ -203,8 +248,12 @@ global item status; only this plan's receipt can suppress replay.
 Write the exact journal path provided by the bootstrap prompt (normally
 `journal/<YYYY-MM-DD>.md`; replay mode uses a suffixed recovery journal) from the COMPACT plan totals +
 your collected one-line summaries (NOT from raw sessions):
-- **Summary line**: harvested N, shards S, dropped M, active-work +A/-D, skills edited [...], promotions P, review-queue Q.
+- **Summary line**: harvested N sessions (P prompts, A answers), shards S, dropped M, rerouted-to-reference R, active-work +A/-D, skills edited [...], promotions P, review-queue Q.
 - **Applied changes**: one bullet per skill edit (its APPLY summary line).
+- **Conversation signals**: `apply-plan.totals.signals` (questions answered, corrections, preferences,
+  decisions) and where notable corrections/preferences went.
+- **Size check**: chars before -> after for each edited skill and `dream-active-work` vs its budget; flag
+  any still over budget.
 - **Active work snapshot**: the current threads after this run.
 - **Review queue**: links to any proposal files awaiting approval.
 - **For next in-repo session**: any repo-specific patterns to commit when next inside that repo.
@@ -218,8 +267,66 @@ or emit a final response before it exists.
 
 ## Classification rubric  (READ BY EACH MAP SUB-AGENT - single source of truth)
 A **claim** is one durable, generally-worded fact / pattern / decision - never "what I did today".
-Assign `domain` (your project/area tags | `dev-workflow` | `off-domain`), `horizon`, `importance` (1-10:
-how much would this help me 6 months from now, in a different session?), `confidence`, `target`.
+Assign `domain` (your project/area tags | `dev-workflow` | `off-domain`), `scope`, `horizon`, `importance`
+(1-10: how much would this help me 6 months from now, in a different session?), `confidence`, `target`,
+and `signal`.
+
+### Mining the conversation (the back-and-forth is primary evidence)
+Read each session as a conversation, not a log: the user's prompts say what they needed to know or do, the
+agent's answers say what was found, and the exchange between them shows what survived scrutiny.
+- **Questions -> settled answers** (`signal=question`). When the user asks something and an answer survives -
+  backed by source, logs or tests, not contradicted later, built on by follow-ups - its durable core is a
+  claim. A question asked repeatedly, or one that needed a long investigation, marks a knowledge gap: raise
+  importance and target the skill a future session would load to answer it.
+- **Corrections** (`signal=correction`). When the user corrects the agent ("no, it is X", "you missed Y")
+  or later evidence overturns an answer, keep the corrected fact, plus a one-line pitfall if the wrong
+  assumption is a natural one to make. Never record the superseded version.
+- **Preferences and working rules** (`signal=preference`) stated in instructions or pushback ("always",
+  "never", "I prefer", "don't"). They are `cross-cutting` only when they apply beyond the task at hand;
+  task-local instructions ("don't touch that file", "keep the PR description brief") are drops. Skip
+  anything the personal instruction files already say.
+- **Decisions with rationale** (`signal=decision`, "X over Y because Z"): `topic` when the reason is a
+  lasting property of the system, `feature` when it only concerns the change in flight.
+- **Findings** (`signal=finding`) and in-flight **status** (`signal=status`, always `feature`).
+- **Confidence comes from the dialogue**: verified by source/logs/tests or confirmed by the user -> high;
+  plausible but unverified agent reasoning -> medium at most; doubted or revised later -> low or drop.
+- `summary` entries condense earlier turns; use them as evidence under the same rules. Ignore pleasantries,
+  formatting/tone requests, progress chatter, and tool noise.
+
+### Scope decides the home (learnings leave the Dream skills)
+| `scope` | What it is | `horizon` | Home |
+|---|---|---|---|
+| `feature` | Only meaningful while one feature, PR, investigation, incident or rollout is in flight: status, next steps, PR/bug numbers, the design being drafted, per-change decisions | short | `dream-active-work`, one entry per `thread` |
+| `topic` | Durable knowledge about one system/component/area that stays true after the current work ends: architecture, behavior, constraints, debugging recipes | long | the reference skill that owns the topic |
+| `cross-cutting` | Durable and not about one system: tools, workflows, engineering lessons, working preferences | long | `config.targets.general_skill`, or the reference skill that owns that tool/workflow |
+
+The test: *"Would this still be true and useful after this feature / PR / investigation is finished?"* If
+yes, it is NOT `feature` - even though it was discovered while working on one - so it never goes to
+`dream-active-work`, which holds only the in-flight status of each thread. Split a mixed observation into a
+`feature` claim (the status) and a `topic`/`cross-cutting` claim (the lesson). The reducer enforces this:
+a durable scope aimed at active-work is rerouted to a reference skill or review, and a `feature` claim can
+never enter a reference skill.
+
+### Altitude & anti-bloat (specific detail only in a skill about that thing)
+A skill holds knowledge at its own level of generality. Before targeting a skill, ask: *is this skill about
+the thing this detail describes?*
+- Write each LONG claim as a general rule, pattern or fact in one or two sentences, with at most one short
+  example. Strip instance detail - resource/cluster/RG names, subscription IDs, PR/bug/incident numbers,
+  commit SHAs, dates, build numbers, exact counts, one-off error text - unless that detail IS the durable
+  fact (a stable endpoint, a naming pattern, a canonical command) and the target skill is specifically
+  about it.
+- Code-level specifics (one method's behavior, one handler's bug, a line-level mechanism, a telemetry
+  table's cadence found in one investigation) belong to the repo (its docs, PR, agent-history), not a
+  personal skill - unless the skill exists to document exactly that component. If generalizing leaves
+  nothing useful, it is not skill material: `horizon=drop` (or `feature` if it belongs to an active thread).
+- A claim that restates or marginally extends what the target skill already says is a drop, not an addition.
+- Importance reflects breadth: 7+ only if it will help across many future sessions; knowledge that only
+  matters when working on one narrow component is 5 or less.
+
+### Inbox notes
+`inbox.md` notes are the user's directives and are re-read every night. "Track X" / "stop tracking X"
+produce the matching `feature` claim. Vetoes and placement rules ("do not reintroduce ...", "keep <skill>
+lean") produce NO claim - obey them: drop every claim they cover, including paraphrases and new wordings.
 
 ### Anti-pollution rules (this is the whole point)
 - **DROP** (written nowhere, but still emit it so recurrence is tracked): trivial/one-off debugging,
@@ -227,16 +334,17 @@ how much would this help me 6 months from now, in a different session?), `confid
   scheduled-automation run transcripts, rejected explorations, and anything with
   `importance < config.thresholds.importance_keep_floor` that is not part of an active thread.
 - **off-domain** (e.g. a personal side project): DROP from your reference skills. Keep ONLY if it yields
-  a durable, reusable dev-workflow lesson -> then `domain=dev-workflow`, `target` = your dev-workflow skill.
-- **LONG** (durable architecture, topology, naming, service/telemetry mapping, API-version quirks, deploy
-  playbooks, repo map, permanent constraints, personal preferences): route to the matching reference
-  skill. Apply your durable-vs-transient KEEP filter strictly (if you have one). If the user has NO
-  long-term skills yet (empty `config.targets.long_term_skills`), route every LONG claim to the seed
-  skill (`config.seed.general_skill.name`). Repo-owned conventions documented in a repo's own agent
+  a durable, reusable dev-workflow lesson -> then `domain=dev-workflow`, `scope=cross-cutting`,
+  `target` = `config.targets.general_skill`.
+- **LONG** (`topic` / `cross-cutting`: durable architecture, topology, naming, service/telemetry mapping,
+  API-version quirks, deploy playbooks, repo map, permanent constraints, personal preferences): route to the
+  matching reference skill. Apply your durable-vs-transient KEEP filter strictly (if you have one). If the
+  user has NO long-term skills yet (empty `config.targets.long_term_skills`), route every LONG claim to the
+  seed skill (`config.seed.general_skill.name`). Repo-owned conventions documented in a repo's own agent
   guidance (`config.read_only_context`) are NOT personal knowledge - reference them, do not copy them in.
-- **SHORT** (active feature, in-flight PR, ongoing investigation, current bug being worked, recent test
-  result still live): `target=dream-active-work` ONLY. Never put in-flight/incident specifics into a
-  reference skill.
+- **SHORT** (`feature`: active feature, in-flight PR, ongoing investigation, current bug being worked,
+  recent test result still live): `target=dream-active-work` ONLY. Never put in-flight/incident specifics
+  into a reference skill.
 - **Split rule**: a live incident / unmerged-PR workaround is temporary. Capture only the *durable
   lesson* it reveals as a LONG claim, and keep the transient specifics as a SHORT claim.
 
@@ -249,20 +357,23 @@ how much would this help me 6 months from now, in a different session?), `confid
 A branch/feature/investigation appearing across multiple sessions in the window (e.g.
 `feature/checkout-refactor`, `bugfix/search-timeout`) is an **active thread** -> one refreshed entry in
 `dream-active-work` with title, repo/branch, goal, status, next/open, key files, `last_touched`.
+Give every `feature` claim of one thread the same `thread` value.
 (The sharder groups a thread's sessions into the same shard, so one MAP sub-agent sees the whole thread.)
 
 ## Guardrails
 - Never write secrets, tokens, credentials, or PII into any skill/journal/proposal - even if present in a session.
-- Never delete a user's existing skill prose; only refine/append/dedup. Archival = review-queue or a ledger
-  status change, not silent deletion.
+- Never delete a user's existing skill prose; only refine/append/dedup. Merging duplicate lines or tightening
+  wording to respect a skill's budget is refinement, provided no fact is lost. Archival = review-queue or a
+  ledger status change, not silent deletion. `dream-active-work` is Dream-owned short-term memory: its
+  compaction may remove text only after appending it to `active_work.archive_file`.
 - Keep `dream-active-work` and the `dream` index skill SMALL (they load often). Detail lives in the
-  on-demand reference skills.
+  on-demand reference skills, and only at the level of generality of the skill that holds it.
 - If a source is empty or a sub-agent errors after one retry, continue with the rest. Partial > none.
 - Idempotent: re-running the same night must not double-apply (ledger fingerprints + reducer dedup prevent it).
 
 ## Single-agent fallback
 If `config.map_reduce.enabled` is `false`, skip sharding and run the classic single pass: read the harvest
-JSON directly, classify inline per the rubric above, `ledger.py upsert`, then apply per the same
-precedence (SHORT -> dream-active-work; LONG+high -> reference skill in place; LONG+med/low -> review-queue;
-new area -> review-queue proposal). Use this only on explicitly light days; the map-reduce path is the
-default and is preferred for quality.
+JSON directly, classify inline per the rubric above (scope decides SHORT vs LONG), `ledger.py upsert`, then
+apply per the same precedence (SHORT -> dream-active-work; LONG+high -> reference skill in place;
+LONG+med/low -> review-queue; new area -> review-queue proposal) and the same altitude and budget rules.
+Use this only on explicitly light days; the map-reduce path is the default and is preferred for quality.

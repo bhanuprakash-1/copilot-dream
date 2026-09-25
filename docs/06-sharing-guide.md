@@ -33,8 +33,9 @@ Then update the **hard-coded paths** in:
 > `%USERPROFILE%` path and your repo root gets you 90% there.
 
 ## Model policy is portable
-The two-model policy (`claude-opus-4.8` / `gpt-5.6-sol`, `long_context`, `max`) is enforced in
-`run-dream.ps1`. If you prefer different models, edit the `ValidateSet` and the flags in one place.
+The cost-conscious model policy (currently `gpt-5.6-sol`, `long_context`, `xhigh`) is read from
+`config.model_policy` by `resolve-model-policy.ps1`. Every agent and retry explicitly requests it.
+Change the pin only when the user explicitly requests it; never substitute another model or default context.
 
 ## Minimal bring-up on a new machine
 ```powershell

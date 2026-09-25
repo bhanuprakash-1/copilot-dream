@@ -57,7 +57,7 @@ if (-not $py) { Write-Host "Python not found on PATH."; exit 3 }
 
 function Get-Field($path, $name) {
   # read a 'name: value' line from the proposal's YAML frontmatter
-  $pat = '^\s*' + [regex]::Escape($name) + ':\s*(.+?)\s*$'
+  $pat = '^\s*' + [regex]::Escape($name) + ':\s*["'']?(.+?)["'']?\s*$'
   $m = Select-String -Path $path -Pattern $pat -EA SilentlyContinue | Select-Object -First 1
   if ($m) { return $m.Matches[0].Groups[1].Value } else { return $null }
 }

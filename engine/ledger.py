@@ -20,6 +20,7 @@ The Dream agent calls these subcommands (deterministic, no fragile inline SQL):
 
 Item dict shape (upsert):
   { "claim": str, "domain": "<domain>|dev-workflow|off-domain",
+    "scope": "feature|topic|cross-cutting", "thread": str, "signal": str,
     "horizon": "long|short|drop", "importance": 1..10,
     "confidence": "high|medium|low", "target": "<skill-name>|dream-active-work|review-queue",
     "status": "active|applied|proposed|archived|dropped",
@@ -70,9 +71,14 @@ CREATE TABLE IF NOT EXISTS items (
   source TEXT,
   evidence TEXT,
   notes TEXT,
-  updated_at TEXT
+  updated_at TEXT,
+  scope TEXT,
+  thread TEXT,
+  signal TEXT
 );
 """
+# Columns added after the first release; ensure_schema() migrates older ledgers in place.
+MIGRATED_COLUMNS = (("scope", "TEXT"), ("thread", "TEXT"), ("signal", "TEXT"))
 DDL_RUNS = """
 CREATE TABLE IF NOT EXISTS runs (
   run_id TEXT PRIMARY KEY,
@@ -82,14 +88,24 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 """
 
+def ensure_schema(c):
+    c.execute(DDL_ITEMS); c.execute(DDL_RUNS)
+    have = {row[1] for row in c.execute("PRAGMA table_info(items)")}
+    for col, typ in MIGRATED_COLUMNS:
+        if col not in have:
+            c.execute("ALTER TABLE items ADD COLUMN %s %s" % (col, typ))
+
 def cmd_init(cfg, args):
-    c = connect(cfg); c.execute(DDL_ITEMS); c.execute(DDL_RUNS); c.commit(); c.close()
+    c = connect(cfg); ensure_schema(c)
+    # Drops are recorded as 'dropped' so the active dump stays small; older ledgers stored them 'active'.
+    c.execute("UPDATE items SET status='dropped', updated_at=? WHERE horizon='drop' AND status='active'", (iso(),))
+    c.commit(); c.close()
     print("LEDGER INIT OK -> %s" % expand(cfg["paths"]["ledger_db"]))
 
 def cmd_upsert(cfg, args):
     items = json.load(open(args.json, encoding="utf-8"))
     if isinstance(items, dict): items = [items]
-    c = connect(cfg); c.execute(DDL_ITEMS)
+    c = connect(cfg); ensure_schema(c)
     now, day = iso(), today()
     ins = upd = 0
     for it in items:
@@ -103,27 +119,35 @@ def cmd_upsert(cfg, args):
             if last_day != day: dd += 1
             c.execute("""UPDATE items SET claim=?,domain=?,horizon=?,importance=?,confidence=?,
                          target=?,status=COALESCE(?,status),hit_count=?,distinct_days=?,last_seen=?,
-                         last_day=?,source=?,evidence=?,notes=?,updated_at=? WHERE fingerprint=?""",
+                         last_day=?,source=?,evidence=?,notes=?,updated_at=?,scope=COALESCE(?,scope),
+                         thread=COALESCE(?,thread),signal=COALESCE(?,signal) WHERE fingerprint=?""",
                       (claim, it.get("domain"), it.get("horizon"), it.get("importance"), it.get("confidence"),
                        it.get("target"), it.get("status"), hc, dd, now, day, it.get("source"),
-                       it.get("evidence"), it.get("notes"), now, fp))
+                       it.get("evidence"), it.get("notes"), now, it.get("scope"), it.get("thread"),
+                       it.get("signal"), fp))
             upd += 1
         else:
             c.execute("""INSERT INTO items(fingerprint,claim,domain,horizon,importance,confidence,target,
-                         status,hit_count,distinct_days,first_seen,last_seen,last_day,source,evidence,notes,updated_at)
-                         VALUES(?,?,?,?,?,?,?,?,1,1,?,?,?,?,?,?,?)""",
+                         status,hit_count,distinct_days,first_seen,last_seen,last_day,source,evidence,notes,
+                         updated_at,scope,thread,signal)
+                         VALUES(?,?,?,?,?,?,?,?,1,1,?,?,?,?,?,?,?,?,?,?)""",
                       (fp, claim, it.get("domain"), it.get("horizon"), it.get("importance"), it.get("confidence"),
-                       it.get("target"), it.get("status", "active"), now, now, day, it.get("source"),
-                       it.get("evidence"), it.get("notes"), now))
+                       it.get("target"),
+                       it.get("status") or ("dropped" if it.get("horizon") == "drop" else "active"),
+                       now, now, day, it.get("source"),
+                       it.get("evidence"), it.get("notes"), now, it.get("scope"), it.get("thread"),
+                       it.get("signal")))
             ins += 1
     c.commit(); c.close()
     print("UPSERT OK inserted=%d updated=%d" % (ins, upd))
 
 def cmd_promotions(cfg, args):
     th = cfg["thresholds"]
-    c = connect(cfg); c.execute(DDL_ITEMS)
+    c = connect(cfg); ensure_schema(c)
+    # Feature-scoped items are in-flight status; recurring for days does not make them durable knowledge.
     rows = c.execute("""SELECT fingerprint,claim,importance,hit_count,distinct_days,target,domain
                         FROM items WHERE horizon='short' AND status IN('active','applied')
+                        AND COALESCE(scope,'') <> 'feature'
                         AND hit_count>=? AND distinct_days>=? ORDER BY hit_count DESC""",
                      (th["promote_hit_count"], th["promote_distinct_days"])).fetchall()
     c.close()
@@ -133,22 +157,23 @@ def cmd_promotions(cfg, args):
 def cmd_decays(cfg, args):
     days = cfg["thresholds"]["decay_days"]
     cutoff = iso(utcnow() - timedelta(days=days))
-    c = connect(cfg); c.execute(DDL_ITEMS)
+    c = connect(cfg); ensure_schema(c)
+    # Phase 4 marks active-work items 'applied', so both statuses are live short-term memory.
     rows = c.execute("""SELECT fingerprint,claim,last_seen,target FROM items
-                        WHERE horizon='short' AND status='active' AND last_seen < ?
+                        WHERE horizon='short' AND status IN('active','applied') AND last_seen < ?
                         ORDER BY last_seen ASC""", (cutoff,)).fetchall()
     c.close()
     out = [dict(zip(["fingerprint","claim","last_seen","target"], r)) for r in rows]
     print(json.dumps(out, indent=2, ensure_ascii=False))
 
 def cmd_set_status(cfg, args):
-    c = connect(cfg); c.execute(DDL_ITEMS)
+    c = connect(cfg); ensure_schema(c)
     c.execute("UPDATE items SET status=?,updated_at=? WHERE fingerprint=?", (args.status, iso(), args.fingerprint))
     c.commit(); n = c.total_changes; c.close()
     print("SET-STATUS %s -> %s (%d)" % (args.fingerprint, args.status, n))
 
 def cmd_stats(cfg, args):
-    c = connect(cfg); c.execute(DDL_ITEMS); c.execute(DDL_RUNS)
+    c = connect(cfg); ensure_schema(c)
     total = c.execute("SELECT COUNT(*) FROM items").fetchone()[0]
     by_h = dict(c.execute("SELECT horizon,COUNT(*) FROM items GROUP BY horizon").fetchall())
     by_s = dict(c.execute("SELECT status,COUNT(*) FROM items GROUP BY status").fetchall())
@@ -159,8 +184,10 @@ def cmd_stats(cfg, args):
                       "runs": runs, "last_run": last}, indent=2, ensure_ascii=False))
 
 def cmd_dump(cfg, args):
-    c = connect(cfg); c.execute(DDL_ITEMS)
-    q = "SELECT fingerprint,claim,domain,horizon,importance,confidence,target,status,hit_count,distinct_days,last_seen FROM items"
+    c = connect(cfg); ensure_schema(c)
+    cols = ["fingerprint","claim","domain","scope","horizon","importance","confidence","target","status",
+            "hit_count","distinct_days","last_seen"]
+    q = "SELECT %s FROM items" % ",".join(cols)
     conds, params = [], []
     if args.status: conds.append("status=?"); params.append(args.status)
     if args.horizon: conds.append("horizon=?"); params.append(args.horizon)
@@ -168,12 +195,11 @@ def cmd_dump(cfg, args):
     q += " ORDER BY importance DESC, hit_count DESC"
     rows = c.execute(q, params).fetchall()
     c.close()
-    cols = ["fingerprint","claim","domain","horizon","importance","confidence","target","status","hit_count","distinct_days","last_seen"]
     print(json.dumps([dict(zip(cols, r)) for r in rows], indent=2, ensure_ascii=False))
 
 def cmd_record_run(cfg, args):
     rec = json.load(open(args.json, encoding="utf-8"))
-    c = connect(cfg); c.execute(DDL_RUNS)
+    c = connect(cfg); ensure_schema(c)
     c.execute("""INSERT OR REPLACE INTO runs(run_id,started,finished,model,window_hours,harvested,
                  dropped,applied,proposed,promoted,decayed,journal_path,status,notes)
                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",

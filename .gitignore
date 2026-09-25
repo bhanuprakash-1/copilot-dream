@@ -18,6 +18,7 @@ completion/
 pending/
 harvest/
 logs/
+archive/
 inbox.md
 
 # Guard the same paths under engine/ in case someone runs in-tree
@@ -29,6 +30,7 @@ engine/completion/
 engine/pending/
 engine/harvest/
 engine/logs/
+engine/archive/
 engine/inbox.md
 
 # Packaging staging (never commit)

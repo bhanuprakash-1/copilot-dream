@@ -1,8 +1,9 @@
 # Dream Inbox
 
 Drop freeform notes here for the next nightly Dream run to consider. One idea per bullet.
-The Dream reads this file, folds durable notes into the right skill, and **clears applied entries**
-into the day's journal. Anything you want remembered but didn't get captured in a session goes here.
+The Dream re-reads every note on every run: "track / stop tracking X" notes update active work, and vetoes or
+placement rules ("do not reintroduce ...", "keep <skill> lean") are obeyed each night, including against
+paraphrases. Delete a note yourself once it no longer applies.
 
 Examples of good inbox notes:
 - "Remember: the staging telemetry cluster is X; add it to telemetry-queries if missing."

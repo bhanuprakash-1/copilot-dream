@@ -8,7 +8,10 @@ matches the current work**. So the way to "have a lot of knowledge available wit
 - many **narrowly-matching detail skills** whose bodies stay out of context until they're relevant.
 
 The Dream maintains that discipline: it keeps `dream` and `dream-active-work` small and pushes detail into
-the reference skills.
+the reference skills — and only at each skill's own level of generality. Instance detail (PR numbers, resource
+names, one component's code-level behavior) goes into a skill only if that skill is about exactly that thing;
+otherwise it is generalized or dropped. Each reference skill has a soft size budget
+(`thresholds.skill_budget_chars`): once over it, edits merge and tighten instead of growing the file.
 
 ```
 Question ──► matches `dream` (broad description) ──► routing table ──► names the right detail skill
@@ -24,9 +27,12 @@ Question ──► matches `dream` (broad description) ──► routing table �
 - **Why:** keeps the always-relevant footprint tiny while still guiding the agent to the right place.
 
 ### `dream-active-work` — short-term memory  (`~/.copilot/skills/dream-active-work/SKILL.md`)
-- **Role:** the current in-flight threads (feature, PR, investigation) with `last_touched` and decay.
-- **Schema per entry:** Title · repo/branch · goal · status · next/open · key files · `last_touched`.
-- **Lifecycle:** refreshed while active; archived after 14 days untouched; durable lessons promoted out first.
+- **Role:** the current in-flight threads (feature, PR, investigation) with `last_touched` and decay. Only live
+  status lives here; learnings found along the way go to the reference skills (`scope` = `topic` /
+  `cross-cutting`).
+- **Schema per entry:** Title · repo/branch · goal · status · next/open · key files · `last_touched` (~8 lines).
+- **Lifecycle:** refreshed while active; archived after 14 days untouched; compacted when over
+  `active_work_budget_chars` / `active_work_max_threads`, with removed text kept in `archive/active-work-<date>.md`.
 
 ### `knowledge-base` — seeded general reference  (`~/.copilot/skills/knowledge-base/SKILL.md`)
 - **Role:** the cold-start catch-all. If you've configured **no** long-term skills, the Dream seeds this one

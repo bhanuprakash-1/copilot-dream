@@ -15,23 +15,24 @@
 ## The headless command (what actually runs)
 ```
 copilot -p "<bootstrap that points at dream-consolidation.prompt.md>" `
-  --model claude-opus-4.8 `      # or gpt-5.6-sol — ONLY these two
-  --context long_context `        # 1,000,000-token tier
-  --effort max `                  # max reasoning
+  --model gpt-5.6-sol `           # cost-conscious pin in config.model_policy
+  --context long_context `        # long-context tier (~1M)
+  --effort xhigh `                # exactly xhigh
   --allow-all-tools --allow-all-paths --no-ask-user `
   --add-dir <your-repo-root> --add-dir %USERPROFILE% `
   --log-dir <dream>\logs -C <dream>
 ```
-`run-dream.ps1` builds this, after first running `harvest.py`. It **refuses any model except the two allowed**
-(PowerShell `ValidateSet`) and passes `long_context` + `max` unconditionally.
+`run-dream.ps1` resolves and validates `config.model_policy` before harvesting. The shared
+`resolve-model-policy.ps1` rejects unlisted models, default context, and effort below `xhigh`.
+The bootstrap and consolidation prompt require explicit model/effort/context on every sub-agent,
+parallel worker and retry; no downgrade is permitted if this configuration is unavailable.
 
 ### Model flags reference
 | Want | Flag |
 |---|---|
-| Claude Opus 4.8 | `--model claude-opus-4.8` |
 | GPT-5.6 Sol | `--model gpt-5.6-sol` |
 | 1M context | `--context long_context` |
-| Max reasoning | `--effort max` |
+| Xhigh reasoning | `--effort xhigh` |
 | Non-interactive | `-p "<prompt>"` + `--allow-all-tools` + `--no-ask-user` |
 
 You need exactly one nightly **trigger**. **Microsoft Scout (ClawPilot)** (Option B) is the recommended driver —
@@ -44,7 +45,7 @@ No third-party dependency; runs in your logged-on session so mapped drives + aut
 # register (04:15 daily, runs only when logged on)
 powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\.copilot\dream\triggers\install-scheduled-task.ps1
 
-# with GPT-5.6 Sol instead
+# optional explicit pin (must be permitted by config.model_policy)
 ... install-scheduled-task.ps1 -Model gpt-5.6-sol
 
 # test immediately
@@ -65,7 +66,7 @@ to drive the Dream, because it covers three jobs at once — trigger the nightly
 and give you an **interactive review thread** you drive in plain English — with no extra glue code.
 
 **Trigger the nightly run:** create a scheduled Scout automation whose shell step runs
-`powershell -File %USERPROFILE%\.copilot\dream\run-dream.ps1 -Model claude-opus-4.8` (the same command as the
+`powershell -File %USERPROFILE%\.copilot\dream\run-dream.ps1` (the same command as the
 Task in Option A). Or keep Task Scheduler for the run itself and use Scout only for the digest + review below.
 
 **Digest + review — two ready-to-import automations under `engine/triggers/`:**
@@ -92,7 +93,9 @@ workflow itself is documented in
 > channel works too — adapt `engine/triggers/desktop-scheduler-digest.example.json` to it. Scout is simply the
 > concrete tool the author uses.
 
-> To switch the heavy model to GPT-5.6 Sol, change `-Model gpt-5.6-sol` in the run step.
+> The default scheduled action reads the model pin from `config.json` on every run. Change it only
+> when the user explicitly requests a different model, then align the Scout automation and explicit
+> worker-launch instructions. Preserve long context and xhigh effort; do not rewrite history.
 
 ## Verifying a run
 ```powershell
@@ -100,7 +103,7 @@ workflow itself is documented in
 ...\run-dream.ps1 -DryRun
 
 # a real run now (foreground, ~10-30 min)
-...\run-dream.ps1 -Model claude-opus-4.8
+...\run-dream.ps1
 
 # afterwards
 python ...\ledger.py stats
@@ -110,23 +113,36 @@ Get-Content ...\dream\logs\run-<today>.log -Tail 40
 ```
 
 ## Cost / runtime notes
-- One run reads a day of sessions + all target skills in a single 1M-context pass at max effort — expect
-  meaningful AI-credit use per night. Tune by: shortening the window, lowering `--effort` for light days, or
-  running every other night. The harvest itself is free (local Python).
+- All agents use the long-context tier and xhigh reasoning, with small inputs through map-reduce.
+  Expect meaningful AI-credit use per night. Tune costs by shortening the window or running less often,
+  not by weakening the required model, reasoning or context tier. The harvest itself is free (local Python).
 - `run-dream.ps1` sets Copilot's background-agent drain to 3300 seconds and requires the orchestrator to
   keep its headless turn active while parallel agents run. It advances the watermark only after a fresh
   journal plus final completion marker; a clean Copilot exit by itself is not success.
+- The headless run starts with every MCP server disabled (`runner.disable_mcp_servers`) — the Dream needs only
+  local tools, and unattended OAuth-backed servers can make the CLI abort at startup. An attempt that fails
+  before applying anything is retried once with a fresh session (`runner.max_attempts`).
 - If REDUCE completed before an interruption, the unfinished work order is preserved under `pending/`.
   Resume only APPLY with `run-dream.ps1 -ReplayPlan <pending-apply-plan.json>`.
 
 ## Tuning knobs (config.json)
-- `window.default_hours` / `max_hours` — how much history each run considers.
-- `thresholds.*` — promotion (hit_count/distinct_days), decay_days, auto-apply confidence, importance floor.
-- `sources.*` — enable/disable sources, add repo roots, truncation sizes.
+- `model_policy` — one authoritative model pin; `context` must be `long_context` and
+  `effort` must be `xhigh`. Sub-agent launch arguments must explicitly match.
+- `window.default_hours` / `max_hours` — how much history each run considers (168h max lets one good run
+  catch up after several missed nights).
+- `runner.*` — MCP servers for the headless run (`disable_mcp_servers`, `keep_mcp_servers`), retry
+  attempts/backoff, and the total time budget.
+- `thresholds.*` — promotion (hit_count/distinct_days), decay_days, auto-apply confidence, importance floor,
+  and the anti-bloat size budgets (`skill_budget_chars`, `skill_budget_overrides`,
+  `active_work_budget_chars`, `active_work_max_threads`).
+- `sources.*` — enable/disable sources, add repo roots, conversation caps (`user_message_max_chars`,
+  `assistant_final_max_chars`, `assistant_interim_max_chars`, `summary_max_chars`, `session_budget_chars`).
 - `domain.relevant_keywords` — bias the classifier's domain-relevance.
 - `read_only_context.*` — point `agent_instruction_globs` / `repo_skill_dirs` at your repos' agent guidance
   (`.github/copilot-instructions.md`, `AGENTS.md`, in-repo skills) so extracted knowledge aligns with each repo's
-  conventions. Consulted **read-only**, non-existent paths skipped — your repos are never edited.
-- `targets.long_term_skills` — the reference skills to refine. **Leave it empty for a zero-config start:** the
+  conventions, and `personal_instruction_globs` at your global instructions so stated preferences aren't
+  re-captured. Consulted **read-only**, non-existent paths skipped — your repos are never edited.
+- `targets.long_term_skills` — the reference skills to refine; `targets.general_skill` names the one that
+  receives cross-cutting learnings. **Leave it empty for a zero-config start:** the
   Dream seeds a single `knowledge-base` skill and *proposes* dedicated skills over time (you approve), so it's
   useful from night one; fill it in once you know your taxonomy. `seed.enabled` toggles this bootstrap/seeding.

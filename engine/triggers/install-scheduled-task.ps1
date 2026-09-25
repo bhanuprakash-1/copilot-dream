@@ -20,7 +20,7 @@
 [CmdletBinding()]
 param(
   [string]$Time = '04:15',
-  [ValidateSet('claude-opus-4.8','gpt-5.6-sol')][string]$Model = 'claude-opus-4.8',
+  [string]$Model,
   [switch]$RunWhenLoggedOff,
   [switch]$Unregister
 )
@@ -34,9 +34,12 @@ if ($Unregister) {
   return
 }
 if (-not (Test-Path $script)) { throw "run-dream.ps1 not found at $script" }
+$engine = Split-Path -Parent $script
+$modelSettings = & (Join-Path $engine 'resolve-model-policy.ps1') -Config (Join-Path $engine 'config.json') -Model $Model
+$modelArgument = if ($PSBoundParameters.ContainsKey('Model')) { " -Model $($modelSettings.Model)" } else { '' }
 
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-  -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`" -Model $Model"
+  -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`"$modelArgument"
 $trigger = New-ScheduledTaskTrigger -Daily -At $Time
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
   -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 3) `
@@ -51,8 +54,8 @@ if ($RunWhenLoggedOff) {
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
   -Settings $settings -Principal $principal -Force `
-  -Description "Nightly Copilot 'Dream' - harvest sessions+git and refine personal skills ($Model @ 1M/max)." | Out-Null
+  -Description "Nightly Copilot 'Dream' - config.model_policy ($($modelSettings.Model), $($modelSettings.Context), $($modelSettings.Effort)); applies to every agent." | Out-Null
 
-Write-Host "Registered '$TaskName' daily at $Time (Model=$Model, LoggedOn=$(-not $RunWhenLoggedOff))."
+Write-Host "Registered '$TaskName' daily at $Time (Model=$($modelSettings.Model), LoggedOn=$(-not $RunWhenLoggedOff))."
 Write-Host "Test now:  Start-ScheduledTask -TaskName $TaskName"
 Write-Host "Inspect:   Get-ScheduledTaskInfo -TaskName $TaskName"

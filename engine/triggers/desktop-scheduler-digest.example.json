@@ -2,7 +2,7 @@
   "_note": "OPTIONAL example. A 'morning digest' automation for any desktop scheduler / automation runner that can run scheduled Copilot prompts and post to a chat channel. The recommended concrete runner is Microsoft Scout (a.k.a. ClawPilot) - see the ready-to-import triggers/scout-digest-automation.example.json (digest + interactive review) and triggers/scout-review-actions-automation.example.json (on-demand actions). Import it into your scheduler and adjust the %USERPROFILE% paths (and notification target) to your environment. NOT required to run the Dream - the Windows Scheduled Task in triggers/install-scheduled-task.ps1 is the primary no-Scout nightly trigger.",
   "id": "drmdigest7x2vq4z",
   "name": "Dream morning digest",
-  "model": "claude-opus-4.8",
+  "model": "gpt-5.6-sol",
   "triggerType": "schedule",
   "enabled": true,
   "browserHeadless": true,
@@ -30,7 +30,7 @@
     {
       "id": "1",
       "label": "Report Dream health + what to review, to chat",
-      "prompt": "Run this shell command and capture its JSON:\n\npowershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\\.copilot\\dream\\dream-status.ps1 -Json\n\nThen read the newest journal in %USERPROFILE%\\.copilot\\dream\\journal\\ (today's <YYYY-MM-DD>.md). Send me a chat message to self titled 'Dream <verdict>' (verdict = GREEN/YELLOW/RED from the JSON) containing, skimmable: the journal age; the journal '## Summary' line; the skills edited last night; any promotions/decays; and the file names of anything in %USERPROFILE%\\.copilot\\dream\\review-queue\\ awaiting my approval. If verdict is RED or the journal is stale, lead with the JSON 'issues' array and the last 5 lines of %USERPROFILE%\\.copilot\\dream\\logs\\run-<today>.log so I can fix it fast. Do not narrate in chat - the message is the only output."
+      "prompt": "MODEL POLICY: Read Dream config.json model_policy before delegating. Current cost-conscious pin: gpt-5.6-sol, reasoning_effort=xhigh, context_tier=long_context (~1M tier). EVERY sub-agent, parallel worker, reviewer and retry must explicitly pass these three launch parameters. Never inherit automatic, alternate-model, lower-effort, or default-context settings. If unavailable, report the limitation and do not fall back. Historical journals report the model actually used; do not rewrite them. Run this shell command and capture its JSON:\n\npowershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\\.copilot\\dream\\dream-status.ps1 -Json\n\nThen read the newest journal in %USERPROFILE%\\.copilot\\dream\\journal\\ (today's <YYYY-MM-DD>.md). Send me a chat message to self titled 'Dream <verdict>' (verdict = GREEN/YELLOW/RED from the JSON) containing, skimmable: the journal age; the journal '## Summary' line; the skills edited last night; any promotions/decays; and the file names of anything in %USERPROFILE%\\.copilot\\dream\\review-queue\\ awaiting my approval. If verdict is RED or the journal is stale, lead with the JSON 'issues' array and the last 5 lines of %USERPROFILE%\\.copilot\\dream\\logs\\run-<today>.log so I can fix it fast. Do not narrate in chat - the message is the only output."
     }
   ],
   "createdAt": "2026-07-16T15:45:00.000Z",

@@ -11,6 +11,11 @@ Use this either from the Scout "Dream digest + review actions" thread (just repl
 the CLI: `copilot -p ~/.copilot/dream/dream-action.prompt.md "reject the flaky-test note and approve the retry-policy one"`.
 
 ## Context you MUST load first (every time, before acting)
+- Model policy: read `config.json` -> `model_policy`. The current cost-conscious pin is `gpt-5.6-sol`,
+  reasoning `xhigh`, context `long_context`. Every delegated agent, parallel worker and retry must
+  explicitly set `model`, `reasoning_effort`, and `context_tier` to those policy values.
+  Only `xhigh` reasoning and long context are allowed; never fall back to tool defaults.
+  If unsupported, report the limitation rather than delegating to a weaker configuration.
 - Engine dir: `~/.copilot/dream` (Windows: `C:\Users\<you>\.copilot\dream`).
 - Pending proposals - run:
   `powershell -NoProfile -ExecutionPolicy Bypass -File ~/.copilot/dream/dream-approve.ps1 -List`

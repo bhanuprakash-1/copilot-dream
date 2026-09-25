@@ -8,16 +8,25 @@
     "_comment": "Used to attribute git commits to you. List every email/name you author commits under."
   },
   "model_policy": {
-    "allowed": ["claude-opus-4.8", "gpt-5.6-sol"],
-    "default": "claude-opus-4.8",
+    "allowed": ["gpt-5.6-sol"],
+    "default": "gpt-5.6-sol",
     "context": "long_context",
-    "effort": "max",
-    "note": "Configurable. Set 'allowed'/'default' to whichever models your Copilot CLI supports; run-dream.ps1's -Model ValidateSet must match. By default both run at 1M context (long_context) with max reasoning."
+    "effort": "xhigh",
+    "note": "Cost-conscious default: GPT-5.6 Sol. Every orchestrator, sub-agent and retry uses this explicit model, long_context (~1M tier), and xhigh reasoning. Never silently fall back. resolve-model-policy.ps1 enforces this policy."
   },
   "window": {
     "default_hours": 30,
-    "max_hours": 72,
-    "note": "Harvest window = now - min(hours since last successful run, max_hours), floored at default_hours on first run."
+    "max_hours": 168,
+    "overlap_minutes": 15,
+    "note": "The first run looks back default_hours. After that, each run resumes at the previous successful run's harvest cutoff minus overlap_minutes (for events flushed to disk shortly after their timestamp), capped at max_hours. The watermark only advances on success, so a multi-night outage is recovered on the next good run as long as it lasts under max_hours."
+  },
+  "runner": {
+    "max_attempts": 2,
+    "retry_backoff_seconds": 120,
+    "total_budget_minutes": 170,
+    "disable_mcp_servers": true,
+    "keep_mcp_servers": [],
+    "note": "run-dream.ps1 launches the headless Copilot run with every MCP server disabled (plus --disable-builtin-mcps): the Dream only uses local tools, and unattended OAuth-backed servers can make Copilot abort at startup ('Managed MCP policy settlement failed before MCP discovery'). List a server in keep_mcp_servers only if your Dream prompt truly needs it. A failed attempt that applied nothing (no apply-plan, no receipts) is retried with a fresh session up to max_attempts, while the whole run stays within total_budget_minutes (keep it under your scheduler's time limit; the shipped scheduled task allows 3h)."
   },
   "map_reduce": {
     "enabled": true,
@@ -30,10 +39,17 @@
     "cli_sessions": {
       "enabled": true,
       "db": "~/.copilot/session-store.db",
-      "assistant_truncate_chars": 1600,
-      "user_truncate_chars": 4000,
+      "use_event_log": true,
+      "session_state_dir": "~/.copilot/session-state",
+      "user_message_max_chars": 6000,
+      "assistant_final_max_chars": 8000,
+      "assistant_interim_max_chars": 600,
+      "summary_max_chars": 8000,
+      "prior_context_max_chars": 3000,
+      "session_budget_chars": 80000,
       "skip_empty_sessions": true,
-      "exclude_cwd_substrings": ["\\.copilot\\dream", "/.copilot/dream"]
+      "exclude_cwd_substrings": ["\\.copilot\\dream", "/.copilot/dream"],
+      "note": "Each session's main-thread conversation is rebuilt from session-state/<id>/events.jsonl: your prompts, the agent's commentary (interim) and final answers with the tools used, compaction summaries, delegations and skills used. Only entries newer than the window start are harvested; prior_context orients the classifier on long-running sessions. Sub-agent internals, injected skill bodies and system notifications are excluded; obvious secrets are redacted. Sessions without an event log fall back to the session-store turns table. session_budget_chars caps one session (commentary is trimmed first)."
     },
     "git_commits": {
       "enabled": true,
@@ -58,6 +74,8 @@
   "targets": {
     "_comment": "List YOUR durable reference skills here; OR leave this empty to let the Dream auto-seed a single 'knowledge-base' skill and propose dedicated ones over time (which you approve). Example entries you might add: 'service-architecture': '~/.copilot/skills/service-architecture/SKILL.md', 'deployment-runbook': '~/.copilot/skills/deployment-runbook/SKILL.md', 'telemetry-queries': '~/.copilot/skills/telemetry-queries/SKILL.md', 'team-conventions': '~/.copilot/skills/team-conventions/SKILL.md'.",
     "long_term_skills": {},
+    "general_skill": "",
+    "general_skill_note": "Optional. Name of one long_term_skills entry that holds durable cross-cutting learnings (tools, workflows, engineering lessons, working preferences) not tied to one system. With no long-term skills, the seed skill plays this role. Topic learnings go to the reference skill that owns the topic; only in-flight feature status goes to dream-active-work.",
     "short_term_skill": "~/.copilot/skills/dream-active-work/SKILL.md",
     "index_skill": "~/.copilot/skills/dream/SKILL.md",
     "agent_memory": {
@@ -78,6 +96,11 @@
     "repo_skill_dirs": [
       "C:/path/to/your-repo/.github/skills"
     ],
+    "personal_instruction_globs": [
+      "~/.copilot/copilot-instructions.md",
+      "~/.copilot/instructions/*.md"
+    ],
+    "personal_instruction_note": "Your global Copilot instructions. Every MAP classifier reads them so a preference already stated there is never re-captured into a skill. Non-existent paths are skipped.",
     "read_caps": { "max_files_per_shard": 12, "max_chars_per_file": 20000 }
   },
   "seed": {
@@ -95,7 +118,11 @@
     "decay_days": 14,
     "auto_apply_min_confidence": "high",
     "importance_keep_floor": 4,
-    "note": "SHORT items with hit_count>=promote_hit_count over >=promote_distinct_days distinct days are promotion candidates. Active SHORT items untouched for decay_days are archived. Only HIGH-confidence LONG items auto-apply; others go to review-queue. Items with importance < importance_keep_floor are dropped unless part of an active thread."
+    "skill_budget_chars": 60000,
+    "skill_budget_overrides": {},
+    "active_work_budget_chars": 20000,
+    "active_work_max_threads": 20,
+    "note": "SHORT items with hit_count>=promote_hit_count over >=promote_distinct_days distinct days are promotion candidates (feature-scoped status never promotes). Active SHORT items untouched for decay_days are archived. Only HIGH-confidence LONG items auto-apply; others go to review-queue. Items with importance < importance_keep_floor are dropped unless part of an active thread. Budgets are soft caps: an APPLY edit to a skill over its budget (skill_budget_overrides can raise one skill's) must not grow it - it merges and tightens to make room, never losing a fact; dream-active-work over its budget or thread cap is compacted, with removed text archived under paths.archive_dir."
   },
   "paths": {
     "engine": "~/.copilot/dream",
@@ -105,6 +132,8 @@
     "logs_dir": "~/.copilot/dream/logs",
     "ledger_db": "~/.copilot/dream/ledger.db",
     "state_file": "~/.copilot/dream/state.json",
-    "prompt_file": "~/.copilot/dream/dream-consolidation.prompt.md"
+    "prompt_file": "~/.copilot/dream/dream-consolidation.prompt.md",
+    "skills_dir": "~/.copilot/skills",
+    "archive_dir": "~/.copilot/dream/archive"
   }
 }

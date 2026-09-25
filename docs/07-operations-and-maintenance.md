@@ -12,7 +12,8 @@ It prints a **GREEN / YELLOW / RED** verdict plus:
 - last run status + model (from the ledger `runs` table),
 - trigger state (Task Scheduler `CopilotDream`, or a Microsoft Scout / ClawPilot automation) + **next run time**,
 - **review-queue count** (what's waiting for you),
-- today's run-log tail on failure.
+- the **last run's outcome** and, if it failed, its one-line `failure-reason` (from the newest run log),
+- the newest run-log tail.
 
 | Verdict | Meaning | Action |
 |---|---|---|
@@ -101,7 +102,9 @@ which the system may reconsider if it recurs). Use `-DryRun` to preview without 
 
 ## Monthly (~5 min)
 - Skim reference-skill diffs (the Dream edits in place). If one is drifting or bloating, trim it — the Dream
-  respects your edits.
+  respects your edits. The journal's size check flags skills over their `skill_budget_chars`; raise one with
+  `thresholds.skill_budget_overrides` if a skill is legitimately large. Text compacted out of
+  `dream-active-work` is kept under `archive/active-work-<date>.md`.
 - Retention is automatic: `run-dream.ps1` keeps the last ~40 harvest snapshots / run outputs and ~30 run
   logs; **journals are kept forever** (tiny, they're your audit trail). Nothing to clean manually.
 
@@ -111,10 +114,14 @@ fine; both trigger options need this), (c) `copilot` **authenticated**, (d) the 
 
 | Symptom (from `dream-status.ps1`) | Likely cause | Fix |
 |---|---|---|
-| RED: journal > 50 h old | machine was off/asleep, or you were signed out overnight | run once now: `run-dream.ps1 -Model claude-opus-4.8`; confirm you stay logged on |
+| RED: journal > 50 h old | machine was off/asleep, or you were signed out overnight | run once now: `run-dream.ps1`; confirm you stay logged on |
 | RED: "no nightly trigger found" | task got removed | re-register: `triggers\install-scheduled-task.ps1` |
 | WARN: Task 'CopilotDream' Disabled | someone disabled it | `Enable-ScheduledTask -TaskName CopilotDream` |
-| WARN: last Task result non-zero / RED last run failed | run errored | read `logs\run-<date>.log` + newest `logs\dream-*-*.out.txt`; common: copilot auth expired -> run `copilot` once interactively to re-auth |
+| WARN: last Task result non-zero / RED last run failed | run errored | the status line shows the logged `failure-reason`; details in `logs\run-<date>.log` + newest `logs\dream-*-*.out.txt`; common: copilot auth expired -> run `copilot` once interactively to re-auth |
+| `failure-reason: ... Managed MCP policy settlement failed before MCP discovery` after ~1 min | Copilot CLI 1.0.88+ aborts prompt mode when configured MCP servers (OAuth-backed ones fail unattended) do not settle before its deadline | **handled by the current runner**: it disables every MCP server for the headless run (`runner.disable_mcp_servers`). If a server was re-enabled through `keep_mcp_servers`, remove it. Reproduce with `copilot -p "Reply OK" -C ~/.copilot/dream` with and without `--disable-mcp-server <name>`. |
+| `failure-reason: ... wrote tool calls as plain text` (exit 0, no journal) | the orchestrator model emitted fake tool calls/outputs instead of executing them | **handled automatically** when nothing was applied: the runner retries once with a fresh session (`runner.max_attempts`). If it recurs, run `run-dream.ps1` manually. |
+| Log shows `retrying in 120s with a fresh session` | an attempt failed before applying anything | normal self-healing; the final attempt's outcome is what counts. An attempt that produced an apply-plan or receipts is never retried — its plan goes to `pending/` for `-ReplayPlan`. |
+| Missed several nights | machine off, auth broken, or repeated failures | the watermark did not advance, so the next good run harvests everything since the last success (up to `window.max_hours`, 168h). Run `run-dream.ps1` once to catch up now. |
 | Output ends after MAP/REDUCE with `waitForPendingBackgroundTasks timed out` | the headless orchestrator ended its turn while background agents were still running, starting Copilot's shutdown drain | **handled by the current runner/prompt**: the drain is raised to 3300 s and the orchestrator must keep the same turn active with `read_agent(wait:true)`. If it still happens, the watermark stays put and the apply plan is copied to `pending/`. |
 | Runner "hangs" after the completion marker is written | a copilot subagent/MCP process is slow to tear down | **handled automatically**: the runner waits a 180 s grace, then proceeds by the journal + completion marker. Bounded by `-TimeoutMinutes` (default 60). |
 | Journal says harvest = 0 sessions | you didn't use Copilot that day | normal; the Dream still writes a short journal |
@@ -129,8 +136,8 @@ Start-ScheduledTask   -TaskName CopilotDream    # force a run now to test end-to
 ```powershell
 Disable-ScheduledTask -TaskName CopilotDream          # pause nightly
 Enable-ScheduledTask  -TaskName CopilotDream          # resume
-# switch the heavy model (only these two allowed):
-triggers\install-scheduled-task.ps1 -Model gpt-5.6-sol
+# inherit the current model pin from config.model_policy:
+triggers\install-scheduled-task.ps1
 # ad-hoc safe run (proposes only, edits nothing):
 run-dream.ps1 -ProposeOnly
 # replay APPLY only from a preserved failed applying-mode work order:
@@ -145,6 +152,7 @@ run-dream.ps1 -ReplayPlan ~/.copilot/dream/pending/apply-plan-<stamp>.json
   correction *is* the training signal: the ledger remembers, so the system converges on your preferences.
 
 ## Safety recap
-- Model policy enforced in the runner (`claude-opus-4.8` / `gpt-5.6-sol`, 1M/max only).
+- Model policy enforced before harvesting: current pin `gpt-5.6-sol`, `long_context`, `xhigh`.
+  All worker/retry launches must pass the same explicit model/effort/context.
 - Never writes secrets/PII; never deletes your skill prose (only refines/dedups; "archival" = queue/ledger).
 - Watermark advances only on a successful **applying** run, so a failed or propose-only night is safely re-considered.

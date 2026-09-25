@@ -28,6 +28,12 @@ $stateFp = Join-Path $engine 'state.json'
 $now = Get-Date
 $issues = New-Object System.Collections.Generic.List[string]
 $warns  = New-Object System.Collections.Generic.List[string]
+$modelSettings = $null
+try {
+  $modelSettings = & (Join-Path $engine 'resolve-model-policy.ps1') -Config (Join-Path $engine 'config.json')
+} catch {
+  $issues.Add("invalid Dream model policy: $($_.Exception.Message)")
+}
 
 # --- prerequisites ---
 $copilot = (Get-Command copilot -EA SilentlyContinue).Source
@@ -79,10 +85,37 @@ $pending = Get-ChildItem $rqDir -Filter '*.md' -EA SilentlyContinue
 $pendingCount = ($pending | Measure-Object).Count
 if ($pendingCount -gt 0) { $warns.Add("$pendingCount review-queue item(s) awaiting your approval") }
 
-# --- last run log error scan ---
-$today = Get-Date -Format 'yyyy-MM-dd'
-$runLog = Join-Path $logsDir "run-$today.log"
-$lastLogTail = if (Test-Path $runLog) { (Get-Content $runLog -Tail 3) -join ' | ' } else { '' }
+# --- outcome of the most recent real run (newest run log; the last attempt decides) ---
+$lastOutcome = $null
+$lastFailureReason = $null
+$newestRunLog = Get-ChildItem $logsDir -Filter 'run-*.log' -EA SilentlyContinue | Sort-Object LastWriteTime -Desc | Select-Object -First 1
+if ($newestRunLog) {
+  $runLines = @(Get-Content -LiteralPath $newestRunLog.FullName -EA SilentlyContinue)
+  $startIdx = -1
+  for ($i = $runLines.Count - 1; $i -ge 0; $i--) {
+    if ($runLines[$i] -match 'DREAM start' -and $runLines[$i] -notmatch 'dryrun=True') { $startIdx = $i; break }
+  }
+  if ($startIdx -ge 0) {
+    $endIdx = $runLines.Count - 1
+    for ($i = $startIdx + 1; $i -lt $runLines.Count; $i++) { if ($runLines[$i] -match 'DREAM start') { $endIdx = $i - 1; break } }
+    $block = @($runLines[$startIdx..$endIdx])
+    if ($block -match 'DREAM ok') { $lastOutcome = 'ok' }
+    elseif ($block -match 'DREAM failed') {
+      $lastOutcome = 'failed'
+      $reasonLine = @($block -match 'failure-reason:') | Select-Object -Last 1
+      $lastFailureReason = if ($reasonLine) { ($reasonLine -split 'failure-reason:\s*', 2)[1] } else { "see $($newestRunLog.Name)" }
+    }
+    elseif ($block -match '\sFATAL\s') {
+      $lastOutcome = 'failed'
+      $lastFailureReason = (@($block -match '\sFATAL\s') | Select-Object -Last 1) -replace '^\S+\s+', ''
+    }
+    elseif (($now - $newestRunLog.LastWriteTime).TotalHours -gt 3.5) { $lastOutcome = 'no-outcome' }
+    else { $lastOutcome = 'running' }
+  }
+}
+if ($lastOutcome -eq 'failed') { $issues.Add("last run failed: $lastFailureReason") }
+if ($lastOutcome -eq 'no-outcome') { $warns.Add("last run in $($newestRunLog.Name) recorded no outcome (killed or crashed?)") }
+$lastLogTail = if ($newestRunLog) { (Get-Content -LiteralPath $newestRunLog.FullName -Tail 3) -join ' | ' } else { '' }
 
 # --- verdict ---
 $verdict = if ($issues.Count -gt 0) { 'RED' } elseif ($warns.Count -gt 0) { 'YELLOW' } else { 'GREEN' }
@@ -91,6 +124,8 @@ if ($Json) {
   $o = [ordered]@{
     verdict=$verdict; journal_age_h=$journalAgeH; newest_journal=$(if($newestJournal){$newestJournal.Name});
     last_run_status=$lastRunStatus; last_run_model=$(if($lastRunTuple){$lastRunTuple[2]});
+    last_outcome=$lastOutcome; last_failure_reason=$lastFailureReason;
+    configured_model=$modelSettings.Model; configured_context=$modelSettings.Context; configured_effort=$modelSettings.Effort;
     ledger_items=$lastRun.items; watermark=$watermark;
     trigger_task=$taskState; trigger_scheduler=$autoState; next_run=$(if($taskInfo){"$($taskInfo.NextRunTime)"});
     pending_review=$pendingCount; issues=@($issues); warnings=@($warns)
@@ -104,6 +139,7 @@ Write-Host ""
 Write-Host "===== DREAM STATUS: $mark $verdict =====" -ForegroundColor $(@{GREEN='Green';YELLOW='Yellow';RED='Red'}[$verdict])
 Write-Host ("  Newest journal : {0}  ({1}h ago)" -f $(if($newestJournal){$newestJournal.Name}else{'<none>'}), $journalAgeH)
 Write-Host ("  Last run       : {0}  model={1}  finished={2}" -f $lastRunStatus, $(if($lastRunTuple){$lastRunTuple[2]}), $(if($lastRunTuple){$lastRunTuple[1]}))
+if ($lastOutcome) { Write-Host ("  Last outcome   : {0}{1}" -f $lastOutcome, $(if($lastFailureReason){" - $lastFailureReason"}else{''})) }
 Write-Host ("  Ledger items   : {0}" -f $lastRun.items)
 Write-Host ("  Watermark      : {0}" -f $(if($watermark){$watermark}else{'<not advanced yet>'}))
 Write-Host ("  Trigger        : TaskScheduler={0}  Scheduler={1}  next={2}" -f $(if($taskState){$taskState}else{'-'}), $(if($autoState){$autoState}else{'-'}), $(if($taskInfo){$taskInfo.NextRunTime}else{'-'}))
@@ -111,11 +147,12 @@ Write-Host ("  Review pending : {0}" -f $pendingCount)
 if ($pendingCount -gt 0) { $pending | ForEach-Object { Write-Host ("      - {0}" -f $_.Name) } }
 if ($issues.Count) { Write-Host "  ISSUES:" -ForegroundColor Red; $issues | ForEach-Object { Write-Host "      * $_" -ForegroundColor Red } }
 if ($warns.Count)  { Write-Host "  WARNINGS:" -ForegroundColor Yellow; $warns | ForEach-Object { Write-Host "      * $_" -ForegroundColor Yellow } }
-if ($lastLogTail) { Write-Host "  Today's run log tail:"; Write-Host "      $lastLogTail" }
+if ($lastLogTail) { Write-Host "  Newest run log tail:"; Write-Host "      $lastLogTail" }
 Write-Host ""
 Write-Host "  Review:  Get-Content $journalDir\$(if($newestJournal){$newestJournal.Name}else{'<date>.md'})"
 Write-Host "  Approve: powershell -File $engine\dream-approve.ps1 -List   (after the edit is in the skill; then -Slug <name>)"
 Write-Host "  Discard: powershell -File $engine\dream-reject.ps1 -List    (then -Slug <name> | -All)"
 Write-Host "  Or just reply in the Scout 'Dream digest + actions' thread in plain English (approve / reject / track)."
-Write-Host "  Run now: powershell -File $engine\run-dream.ps1 -Model claude-opus-4.8"
+Write-Host "  Policy:  $($modelSettings.Model) / $($modelSettings.Context) / $($modelSettings.Effort) (all agents)"
+Write-Host "  Run now: powershell -File $engine\run-dream.ps1"
 Write-Host ""

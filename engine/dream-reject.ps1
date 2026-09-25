@@ -67,7 +67,7 @@ if (-not $py) { Write-Host "Python not found on PATH."; exit 3 }
 
 function Get-Fingerprint($path) {
   # fingerprint lives in the YAML frontmatter: 'fingerprint: <hex>'
-  $m = Select-String -Path $path -Pattern '^\s*fingerprint:\s*([0-9a-fA-F]+)\s*$' -EA SilentlyContinue | Select-Object -First 1
+  $m = Select-String -Path $path -Pattern '^\s*fingerprint:\s*["'']?([0-9a-fA-F]+)["'']?\s*$' -EA SilentlyContinue | Select-Object -First 1
   if ($m) { return $m.Matches[0].Groups[1].Value } else { return $null }
 }
 

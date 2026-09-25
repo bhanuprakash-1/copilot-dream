@@ -31,3 +31,4 @@ _(no active threads yet - the Dream fills this in on its first nightly run)_
 ## Notes for the Dream
 - If a thread here has produced a durable architecture fact, promote it to the matching reference skill and keep only the live status here.
 - Cross-reference the reference skills rather than restating architecture.
+- Keep each entry to ~8 lines and link the design doc or PR instead of copying design detail. When this file exceeds its budget, compact it and archive the removed text under `~/.copilot/dream/archive/`.

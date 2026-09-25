@@ -2,21 +2,25 @@
 <#
 .SYNOPSIS
   Nightly "Dream" runner: harvest the day's material, then run the headless consolidation on
-  claude-opus-4.8 or gpt-5.6-sol at 1M context / max reasoning.
+  the cost-conscious model pinned in config.json, with long_context and xhigh reasoning.
 
 .DESCRIPTION
-  Enforces the two-model policy, stages a deterministic harvest, invokes `copilot -p` with the
+  Enforces config.model_policy, stages a deterministic harvest, invokes `copilot -p` with the
   Dream consolidation prompt, and advances the run watermark only on success.
 
+  The headless run starts with every MCP server disabled (config.runner.disable_mcp_servers): the
+  Dream only needs local tools, and unattended OAuth-backed servers can make Copilot abort at startup
+  while settling managed MCP policy. A failed attempt that applied nothing (no apply-plan, no receipts)
+  is retried with a fresh session, up to config.runner.max_attempts.
+
 .EXAMPLE
-  .\run-dream.ps1                       # default model (claude-opus-4.8), full run
-  .\run-dream.ps1 -Model gpt-5.6-sol    # use GPT-5.6 Sol instead
+  .\run-dream.ps1                       # configured model, full run
+  .\run-dream.ps1 -Model gpt-5.6-sol     # explicit allowed model
   .\run-dream.ps1 -DryRun               # harvest + print the command, do NOT call the model
 #>
 [CmdletBinding()]
 param(
-  [ValidateSet('claude-opus-4.8','gpt-5.6-sol')]
-  [string]$Model = 'claude-opus-4.8',
+  [string]$Model,
   [double]$Hours = 0,                 # 0 = auto (watermark-based)
   [int]$TimeoutMinutes = 60,          # kill + verify-by-artifact if the model run exceeds this
   [ValidateRange(60, 3500)]
@@ -24,12 +28,19 @@ param(
   [string]$ReplayPlan,
   [switch]$SkipHarvest,
   [switch]$ProposeOnly,
-  [switch]$DryRun
+  [switch]$DryRun,
+  # Internal: set by the runner when it re-invokes itself to retry a failed attempt.
+  [int]$Attempt = 1,
+  [string]$RunStartedUtc
 )
 
 $ErrorActionPreference = 'Stop'
 $engine   = Join-Path $env:USERPROFILE '.copilot\dream'
 $config   = Join-Path $engine 'config.json'
+$modelSettings = & (Join-Path $engine 'resolve-model-policy.ps1') -Config $config -Model $Model
+$Model = $modelSettings.Model
+$Context = $modelSettings.Context
+$Effort = $modelSettings.Effort
 $promptFp = Join-Path $engine 'dream-consolidation.prompt.md'
 $stateFp  = Join-Path $engine 'state.json'
 $logsDir  = Join-Path $engine 'logs'
@@ -44,6 +55,101 @@ $today    = Get-Date -Format 'yyyy-MM-dd'
 New-Item -ItemType Directory -Force -Path $logsDir,$completionDir,$pendingDir,$replayWorkDir,$receiptRoot | Out-Null
 
 function Log($m){ $line = "{0}  {1}" -f (Get-Date -Format o), $m; Write-Host $line; Add-Content -Path (Join-Path $logsDir "run-$today.log") -Value $line }
+
+$cfgAll = Get-Content -LiteralPath $config -Raw | ConvertFrom-Json
+$runnerCfg = $cfgAll.runner
+# The active-work applier appends compacted text here with file tools that need an existing parent dir.
+$archiveDir = if ($cfgAll.paths.archive_dir) { $cfgAll.paths.archive_dir -replace '^~', $env:USERPROFILE } else { Join-Path $engine 'archive' }
+New-Item -ItemType Directory -Force -Path $archiveDir | Out-Null
+function Get-RunnerSetting([string]$Name, $Default) {
+  if ($runnerCfg -and $null -ne $runnerCfg.$Name) { return $runnerCfg.$Name }
+  return $Default
+}
+$maxAttempts = [Math]::Max(1, [int](Get-RunnerSetting 'max_attempts' 2))
+$retryBackoffSeconds = [Math]::Max(0, [int](Get-RunnerSetting 'retry_backoff_seconds' 120))
+$totalBudgetMinutes = [int](Get-RunnerSetting 'total_budget_minutes' 170)
+$disableMcp = [bool](Get-RunnerSetting 'disable_mcp_servers' $true)
+$keepMcp = @(Get-RunnerSetting 'keep_mcp_servers' @())
+$firstStartUtc = if ($RunStartedUtc) {
+  [datetime]::Parse($RunStartedUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+} else { (Get-Date).ToUniversalTime() }
+
+# Every MCP server visible from the engine directory (user, workspace, plugin, builtin), so each can be
+# disabled for the headless run. Falls back to the user mcp-config.json if `copilot mcp list` fails.
+function Get-McpServerNames([string]$CopilotPath, [string]$WorkDir) {
+  $names = New-Object System.Collections.Generic.List[string]
+  $oldPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    Push-Location -LiteralPath $WorkDir
+    try { $raw = & $CopilotPath mcp list --json 2>$null | Out-String } finally { Pop-Location }
+    $brace = $raw.IndexOf('{')
+    if ($LASTEXITCODE -eq 0 -and $brace -ge 0) {
+      foreach ($p in ($raw.Substring($brace) | ConvertFrom-Json).mcpServers.PSObject.Properties) { $names.Add($p.Name) }
+    }
+  } catch {
+  } finally {
+    $ErrorActionPreference = $oldPreference
+  }
+  if ($names.Count -eq 0) {
+    try {
+      $userMcp = Get-Content -LiteralPath (Join-Path $env:USERPROFILE '.copilot\mcp-config.json') -Raw | ConvertFrom-Json
+      foreach ($p in $userMcp.mcpServers.PSObject.Properties) { $names.Add($p.Name) }
+    } catch {}
+  }
+  return @($names | Select-Object -Unique)
+}
+
+# One line explaining why an attempt produced no completion artifacts, for the run log and digest.
+function Get-FailureReason([string]$OutFile, $ExitCode, [bool]$TimedOut) {
+  if ($TimedOut) { return "run exceeded ${TimeoutMinutes}m before writing the journal + completion marker" }
+  if (-not (Test-Path -LiteralPath $OutFile)) { return "copilot exit=$ExitCode and produced no output" }
+  $fatal = Select-String -LiteralPath $OutFile -Pattern 'Error executing prompt|^\s*Error:|FATAL' -Context 0,1 | Select-Object -First 1
+  if ($fatal) {
+    $text = ($fatal.Line -replace '^\s*copilot(\.exe)?\s*:\s*', '').Trim()
+    # PowerShell wraps native stderr at console width; rejoin the continuation line.
+    $next = @($fatal.Context.PostContext)[0]
+    if ($fatal.Line.Length -ge 100 -and $next -and $next -notmatch '^\s*(At line|\+|$)') { $text = "$text $($next.Trim())" }
+    return $text.Substring(0, [Math]::Min(300, $text.Length))
+  }
+  if (Select-String -LiteralPath $OutFile -SimpleMatch 'to=functions.' -Quiet) {
+    return "copilot exit=${ExitCode}: the orchestrator wrote tool calls as plain text instead of executing them"
+  }
+  return "copilot exit=$ExitCode without writing the journal + completion marker"
+}
+
+function Get-FreshApplyPlan([datetime]$Since) {
+  Get-ChildItem (Join-Path $harvest 'shards') -Filter 'apply-plan.json' -Recurse -EA SilentlyContinue |
+    Where-Object { $_.LastWriteTime -gt $Since } |
+    Sort-Object LastWriteTime -Desc |
+    Select-Object -First 1
+}
+
+# Kill every process descended from $RootPid that started after $Since, children before parents.
+# Parent ids survive a parent's exit on Windows, so the walk still finds orphaned grandchildren.
+function Stop-DreamProcessTree([int]$RootPid, [datetime]$Since) {
+  $children = @{}
+  foreach ($p in @(Get-CimInstance Win32_Process -EA SilentlyContinue)) {
+    $parent = [int]$p.ParentProcessId
+    if (-not $children.ContainsKey($parent)) { $children[$parent] = New-Object System.Collections.Generic.List[object] }
+    $children[$parent].Add($p)
+  }
+  $victims = New-Object System.Collections.Generic.List[object]
+  $queue = New-Object System.Collections.Generic.Queue[int]
+  $queue.Enqueue($RootPid)
+  while ($queue.Count -gt 0) {
+    $id = $queue.Dequeue()
+    if (-not $children.ContainsKey($id)) { continue }
+    foreach ($child in $children[$id]) {
+      if ($child.CreationDate -ge $Since -and -not ($victims | Where-Object { $_.ProcessId -eq $child.ProcessId })) {
+        $victims.Add($child); $queue.Enqueue([int]$child.ProcessId)
+      }
+    }
+  }
+  for ($i = $victims.Count - 1; $i -ge 0; $i--) {
+    try { Stop-Process -Id $victims[$i].ProcessId -Force -EA Stop; Log "killed stuck $($victims[$i].Name) $($victims[$i].ProcessId)" } catch {}
+  }
+}
 
 if ($BackgroundTaskWaitSeconds -ge ($TimeoutMinutes * 60)) {
   throw "BackgroundTaskWaitSeconds must be lower than TimeoutMinutes (currently $TimeoutMinutes minutes)."
@@ -76,7 +182,7 @@ if ($replayMode -and $ProposeOnly) {
   throw "ReplayPlan cannot be combined with ProposeOnly. Re-run the original propose-only window instead."
 }
 
-Log "DREAM start model=$Model dryrun=$DryRun replay=$replayMode backgroundWait=${BackgroundTaskWaitSeconds}s host=$env:COMPUTERNAME"
+Log "DREAM start model=$Model attempt=$Attempt/$maxAttempts dryrun=$DryRun replay=$replayMode backgroundWait=${BackgroundTaskWaitSeconds}s host=$env:COMPUTERNAME"
 
 # ---- locate copilot ----
 $copilot = (Get-Command copilot -ErrorAction SilentlyContinue).Source
@@ -220,10 +326,15 @@ Inputs:
   - shard:   python $engine\shard.py --config $config
   - reduce:  python $engine\reduce.py --config $config <merge|plan> ...
   - ledger:  python $engine\ledger.py <subcommand>
-Model policy: you must be on $Model at long_context/max, and spawn every sub-agent on $Model too.
+Model policy: you must be on $Model at $Context/$Effort. For EVERY sub-agent, parallel worker and retry,
+explicitly set model="$Model", reasoning_effort="$Effort", context_tier="$Context" in the launch tool.
+Never inherit tool defaults or use a weaker model, lower effort or default context. If the requested
+configuration is unavailable, stop and report the policy failure; do not downgrade.
 HEADLESS LIFECYCLE: NEVER end your turn while any background sub-agent is running. Keep the same turn
 active and wait with read_agent(wait:true, timeout up to 180 seconds), repeating until every launched
 agent has completed. Do not rely on a later completion notification to wake a new turn.
+Execute every step through real tool calls. Never write a tool call or its output as plain text, and
+never report an artifact as written until a tool result shows it exists on disk.
 Every successful APPLY bucket must write its receipt under:
   $receiptDir
 Write the journal to this exact path and record the run:
@@ -237,8 +348,8 @@ completed_utc timestamp. It is the FINAL filesystem action of the run.$safeMode$
 $cliArgs = @(
   '-p', $bootstrap,
   '--model', $Model,
-  '--context', 'long_context',
-  '--effort', 'max',
+  '--context', $Context,
+  '--effort', $Effort,
   '--allow-all-tools',
   '--allow-all-paths',
   '--no-ask-user',
@@ -250,8 +361,17 @@ $cliArgs = @(
   '-C', $engine
 )
 
+$mcpArgs = @()
+if ($disableMcp) {
+  $mcpNames = @(Get-McpServerNames -CopilotPath $copilot -WorkDir $engine | Where-Object { $keepMcp -notcontains $_ })
+  foreach ($name in $mcpNames) { $mcpArgs += @('--disable-mcp-server', $name) }
+  if ($keepMcp -notcontains 'github-mcp-server') { $mcpArgs += '--disable-builtin-mcps' }
+  Log ("mcp: disabled {0} server(s) for the headless run: {1}" -f $mcpNames.Count, ($mcpNames -join ', '))
+}
+$cliArgs += $mcpArgs
+
 if ($DryRun) {
-  Log "DRYRUN would run: copilot -p <bootstrap> --model $Model --context long_context --effort max --allow-all-tools --allow-all-paths --no-ask-user -C $engine"
+  Log "DRYRUN would run: copilot -p <bootstrap> --model $Model --context $Context --effort $Effort --allow-all-tools --allow-all-paths --no-ask-user -C $engine $($mcpArgs -join ' ')"
   Write-Host "`n--- bootstrap prompt ---`n$bootstrap`n------------------------"
   if ($replayMode) { Remove-Item -LiteralPath $replayPlanPath -Force -EA SilentlyContinue }
   if (-not $replayMode -or $ephemeralReplayReceipt) {
@@ -262,6 +382,7 @@ if ($DryRun) {
 }
 
 $outFile = Join-Path $logsDir "dream-$today-$stamp.out.txt"
+$jobPidFile = Join-Path $logsDir "dream-$today-$stamp.job.pid"
 $runStart = Get-Date
 Log "invoking copilot (session $sessionId) -> $outFile (timeout ${TimeoutMinutes}m)"
 Log "copilot background-task drain timeout=${BackgroundTaskWaitSeconds}s"
@@ -270,16 +391,18 @@ Log "copilot background-task drain timeout=${BackgroundTaskWaitSeconds}s"
 # streams to the out file. We wait with a timeout: a stuck subagent/MCP teardown must never hang the run.
 # Success is judged only by fresh journal + final completion marker. Process exit 0 is not task completion.
 $job = Start-Job -Name "dream-copilot" -ScriptBlock {
-  param($cp, $a, $of, $taskWaitSeconds)
+  param($cp, $a, $of, $taskWaitSeconds, $pidFile)
+  Set-Content -LiteralPath $pidFile -Value $PID
   $env:COPILOT_TASK_WAIT_TIMEOUT_SECONDS = [string]$taskWaitSeconds
   & $cp @a *> $of
   $LASTEXITCODE
-} -ArgumentList $copilot, $cliArgs, $outFile, $BackgroundTaskWaitSeconds
+} -ArgumentList $copilot, $cliArgs, $outFile, $BackgroundTaskWaitSeconds, $jobPidFile
 
 $deadline = $runStart.AddMinutes($TimeoutMinutes)
 $graceDeadline = $null
 $code = $null
 $stuckTeardown = $false
+$timedOut = $false
 while ($true) {
   if ($job.State -ne 'Running') { $code = (Receive-Job $job); Log "copilot job state=$($job.State) exit=$code"; break }
   $completionFresh = (Test-Path $completionFile) -and ((Get-Item $completionFile).LastWriteTime -gt $runStart)
@@ -288,17 +411,19 @@ while ($true) {
     Log "completion marker detected; allowing up to 180s grace for teardown"
   }
   if ($graceDeadline -and (Get-Date) -gt $graceDeadline) { Log "grace elapsed; proceeding (teardown still running)"; $stuckTeardown=$true; break }
-  if ((Get-Date) -gt $deadline) { Log "TIMEOUT after ${TimeoutMinutes}m; will verify by artifact"; $stuckTeardown=$true; break }
+  if ((Get-Date) -gt $deadline) { Log "TIMEOUT after ${TimeoutMinutes}m; will verify by artifact"; $stuckTeardown=$true; $timedOut=$true; break }
   Start-Sleep -Seconds 10
 }
 
-# Stop the job. Only force-kill spawned copilot/node processes when teardown was actually stuck (so a
-# clean run never risks a concurrently-launched copilot session).
-Stop-Job $job -EA SilentlyContinue; Remove-Job $job -Force -EA SilentlyContinue
+# Stop the job. Only when teardown was actually stuck, kill the processes this run spawned: the job
+# host's descendants, never other copilot/node processes (interactive sessions, editors) on the machine.
 if ($stuckTeardown) {
-  Get-Process copilot,node -EA SilentlyContinue | Where-Object { $_.StartTime -gt $runStart } |
-    ForEach-Object { try { Stop-Process -Id $_.Id -Force -EA SilentlyContinue; Log "killed stuck $($_.ProcessName) $($_.Id)" } catch {} }
+  $jobPid = $null
+  try { $jobPid = [int](Get-Content -LiteralPath $jobPidFile -EA Stop | Select-Object -First 1) } catch {}
+  if ($jobPid) { Stop-DreamProcessTree -RootPid $jobPid -Since $runStart } else { Log "job pid unknown; not killing any processes" }
 }
+Stop-Job $job -EA SilentlyContinue; Remove-Job $job -Force -EA SilentlyContinue
+Remove-Item -LiteralPath $jobPidFile -Force -EA SilentlyContinue
 
 # ---- success determination: both task-completion artifacts must be fresh ----
 $journalOk = (Test-Path $journalTarget) -and ((Get-Item $journalTarget).LastWriteTime -gt $runStart)
@@ -306,11 +431,7 @@ $completionOk = (Test-Path $completionFile) -and ((Get-Item $completionFile).Las
 $success = $journalOk -and $completionOk
 Log "success=$success (exitcode=$code journalFresh=$journalOk completionFresh=$completionOk)"
 
-function Preserve-PendingApplyPlan {
-  $plan = Get-ChildItem (Join-Path $harvest 'shards') -Filter 'apply-plan.json' -Recurse -EA SilentlyContinue |
-    Where-Object { $_.LastWriteTime -gt $runStart } |
-    Sort-Object LastWriteTime -Desc |
-    Select-Object -First 1
+function Preserve-PendingApplyPlan($plan) {
   if (-not $plan) {
     Log "no fresh apply-plan found to preserve"
     return
@@ -363,18 +484,45 @@ elseif ($success -and $ProposeOnly) {
   exit 0
 }
 elseif ($success) {
-  $state = @{ last_run_utc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); last_model = $Model; last_session = $sessionId }
+  # Stamp the watermark with the harvest cutoff, not the completion time: sessions updated while this
+  # run (and any retries) were in flight must fall inside the next window.
+  $watermarkUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+  try {
+    $latestHarvest = Get-Content -LiteralPath (Join-Path $harvest 'latest.json') -Raw | ConvertFrom-Json
+    $harvestedAt = if ($latestHarvest.cutoff_utc) { $latestHarvest.cutoff_utc } else { $latestHarvest.generated_utc }
+    if ($harvestedAt -is [datetime]) { $watermarkUtc = $harvestedAt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+    elseif ($harvestedAt) { $watermarkUtc = [string]$harvestedAt }
+  } catch {}
+  $state = @{ last_run_utc = $watermarkUtc; last_model = $Model; last_session = $sessionId }
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   [IO.File]::WriteAllText($stateFp, ($state | ConvertTo-Json), $utf8NoBom)
   Log "watermark advanced -> $($state.last_run_utc)"
   Log "DREAM ok"
   exit 0
 } else {
+  Log "failure-reason: $(Get-FailureReason -OutFile $outFile -ExitCode $code -TimedOut $timedOut)"
   if ($replayMode) {
     Remove-Item -LiteralPath $replayPlanPath -Force -EA SilentlyContinue
     Log "replay failed; source plan remains at $replaySourcePlanPath"
   } else {
-    Preserve-PendingApplyPlan
+    $freshPlan = Get-FreshApplyPlan -Since $runStart
+    $receiptCount = @(Get-ChildItem -LiteralPath $receiptDir -Filter '*.json' -EA SilentlyContinue).Count
+    $elapsedMinutes = ((Get-Date).ToUniversalTime() - $firstStartUtc).TotalMinutes
+    $budgetLeft = ($elapsedMinutes + ($retryBackoffSeconds / 60.0) + $TimeoutMinutes) -le $totalBudgetMinutes
+    # Retrying is safe only when this attempt applied nothing; otherwise its plan is preserved for replay.
+    if (-not $freshPlan -and $receiptCount -eq 0 -and $Attempt -lt $maxAttempts -and $budgetLeft) {
+      Remove-Item -LiteralPath $receiptDir -Recurse -Force -EA SilentlyContinue
+      Log "retrying in ${retryBackoffSeconds}s with a fresh session (attempt $($Attempt + 1)/$maxAttempts; nothing was applied)"
+      Start-Sleep -Seconds $retryBackoffSeconds
+      $retryArgs = @{
+        Model = $Model; TimeoutMinutes = $TimeoutMinutes; BackgroundTaskWaitSeconds = $BackgroundTaskWaitSeconds
+        SkipHarvest = $true; Attempt = $Attempt + 1; RunStartedUtc = $firstStartUtc.ToString('o')
+      }
+      if ($ProposeOnly) { $retryArgs.ProposeOnly = $true }
+      & $PSCommandPath @retryArgs
+      exit $LASTEXITCODE
+    }
+    Preserve-PendingApplyPlan $freshPlan
   }
   Log "DREAM failed (completion artifacts missing; watermark NOT advanced; next run reconsiders window)"
   exit 1
