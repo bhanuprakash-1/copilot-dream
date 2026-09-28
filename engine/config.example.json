@@ -28,6 +28,13 @@
     "keep_mcp_servers": [],
     "note": "run-dream.ps1 launches the headless Copilot run with every MCP server disabled (plus --disable-builtin-mcps): the Dream only uses local tools, and unattended OAuth-backed servers can make Copilot abort at startup ('Managed MCP policy settlement failed before MCP discovery'). List a server in keep_mcp_servers only if your Dream prompt truly needs it. A failed attempt that applied nothing (no apply-plan, no receipts) is retried with a fresh session up to max_attempts, while the whole run stays within total_budget_minutes (keep it under your scheduler's time limit; the shipped scheduled task allows 3h)."
   },
+  "history": {
+    "enabled": true,
+    "dir": "~/.copilot/dream/skills-history.git",
+    "changes_dir": "~/.copilot/dream/changes",
+    "report_max_lines_per_skill": 120,
+    "note": "skillaudit.py keeps a local git history of the whole skills folder in its own git directory (never inside the skills folder, never pushed). run-dream.ps1 snapshots before and after every run (tags dream-<date>-<run8>-pre/-post) and writes changes/<date>-<run8>.md|json: every skill changed, with sections added, rewritten or removed and the exact lines, plus a summary in the journal. Undo: skillaudit.py revert --run <run8|date|last> --skill <name> [--check]. Changes made between runs (approvals, manual edits) are committed by the next snapshot."
+  },
   "map_reduce": {
     "enabled": true,
     "target_tokens": 120000,
@@ -76,6 +83,8 @@
     "long_term_skills": {},
     "general_skill": "",
     "general_skill_note": "Optional. Name of one long_term_skills entry that holds durable cross-cutting learnings (tools, workflows, engineering lessons, working preferences) not tied to one system. With no long-term skills, the seed skill plays this role. Topic learnings go to the reference skill that owns the topic; only in-flight feature status goes to dream-active-work.",
+    "watched_skills": [],
+    "watched_note": "Optional. Skills you care most about (e.g. ones you wrote by hand). The Dream still edits them on its own judgement, but every change to them is listed first and line by line in the run's change report, journal and digest, with a one-command revert, and their appliers prefer adding or refining in place over restructuring.",
     "short_term_skill": "~/.copilot/skills/dream-active-work/SKILL.md",
     "index_skill": "~/.copilot/skills/dream/SKILL.md",
     "agent_memory": {

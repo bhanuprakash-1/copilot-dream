@@ -155,19 +155,24 @@ a) For EACH entry in `apply-plan.by_skill` -> one editor sub-agent:
 > CURRENT file in full. Read the standing guidance in `~/.copilot/dream/inbox.md` and the
 > "### Altitude & anti-bloat" rules in `~/.copilot/dream/dream-consolidation.prompt.md`. Read ONLY your
 > bucket from `<apply_plan_path>` at `by_skill["<name>"]` (its `claims`, `current_chars`, `budget_chars`,
-> `over_budget`); do not ask the orchestrator to paste them. Skip a claim if an inbox veto covers it, if
+> `over_budget`, `watched`); do not ask the orchestrator to paste them. Skip a claim if an inbox veto covers it, if
 > the skill already says it, or if it is too specific for this skill's scope. For each remaining claim,
 > refine the existing line that covers the topic, or add ONE concise bullet (1-2 sentences, at the
 > skill's level of generality) under the best existing section. Preserve the file's tone/tables/headers.
 > NEVER delete a fact; cross-reference instead of duplicating. If `over_budget` is true, the edit must not
 > grow the file: make room by merging duplicate or overlapping lines and tightening verbose wording in the
-> sections you touch, without losing any fact.
+> sections you touch, without losing any fact. If `watched` is true, the user values this skill highly and
+> reviews every change to it: prefer adding a line or refining one in place over merging, moving or
+> restructuring, and never remove a topic.
 > If a claim is marked `"promoted": true`, phrase it as a now-durable fact (it graduated from short-term).
 > Do NOT consume or delete any review-queue proposal; those remain human-gated. After the skill edit
 > succeeds, write `<receipt_dir>/skill-<name>.json` with `bucket="skill"`, `name="<name>"`,
-> `status="complete"`, `completed_utc`, every claim `fingerprint` from this bucket in `fingerprints`, and
-> the skipped ones in `skipped_fingerprints`. Then return ONLY one line:
-> "<name>: <what changed>; skipped K; <chars before> -> <chars after>".
+> `status="complete"`, `completed_utc`, every claim `fingerprint` from this bucket in `fingerprints`, the
+> skipped ones in `skipped_fingerprints`, your one-line result in `summary`, and a `changes` array with
+> one entry per edit: `{"section": "<heading>", "action": "added|refined|merged|tightened|moved|removed",
+> "note": "<what and why>"}`. Every merge, tightening, move or removal MUST appear there with its reason;
+> the run's change report quotes it next to the exact diff. Then return ONLY one line:
+> "<name>: <what changed, naming any section tightened, merged or removed>; skipped K; <chars before> -> <chars after>".
 
 b) One active-work sub-agent (if `apply-plan.active_work` has `add` or `remove_decayed`, or is `over_budget`):
 > You maintain `dream-active-work` (`<short_term_skill file>`): short-term memory of IN-FLIGHT work, not a
@@ -184,7 +189,9 @@ b) One active-work sub-agent (if `apply-plan.active_work` has `add` or `remove_d
 > one-liners beyond the cap. Before removing or shortening any text, append it verbatim to
 > `active_work.archive_file` (create it with a dated heading if missing) so nothing is lost. After the
 > edit succeeds, write `<receipt_dir>/active-work.json` with `bucket="active-work"`,
-> `status="complete"`, `completed_utc`, and all add/remove fingerprints in `fingerprints`. Then return ONLY one line
+> `status="complete"`, `completed_utc`, all add/remove fingerprints in `fingerprints`, your one-line result
+> in `summary`, and a `changes` array (`section`, `action`, `note`) naming every thread added, refreshed,
+> collapsed or removed. Then return ONLY one line
 > summarizing adds/removals/compaction and `<chars before> -> <chars after>`.
 
 c) One review-queue sub-agent (if `apply-plan.review_queue` is non-empty):
@@ -249,7 +256,8 @@ Write the exact journal path provided by the bootstrap prompt (normally
 `journal/<YYYY-MM-DD>.md`; replay mode uses a suffixed recovery journal) from the COMPACT plan totals +
 your collected one-line summaries (NOT from raw sessions):
 - **Summary line**: harvested N sessions (P prompts, A answers), shards S, dropped M, rerouted-to-reference R, active-work +A/-D, skills edited [...], promotions P, review-queue Q.
-- **Applied changes**: one bullet per skill edit (its APPLY summary line).
+- **Applied changes**: one bullet per skill edit, `- <skill>: <its APPLY summary line>` (the report
+  generator matches these bullets by skill name).
 - **Conversation signals**: `apply-plan.totals.signals` (questions answered, corrections, preferences,
   decisions) and where notable corrections/preferences went.
 - **Size check**: chars before -> after for each edited skill and `dream-active-work` vs its budget; flag
@@ -258,6 +266,9 @@ your collected one-line summaries (NOT from raw sessions):
 - **Review queue**: links to any proposal files awaiting approval.
 - **For next in-repo session**: any repo-specific patterns to commit when next inside that repo.
 - **Dropped (audit)**: the drop count + a few representative samples and why (so pruning stays reviewable).
+Do not write a section listing file-level skill changes: after the run, `run-dream.ps1` appends
+"## Skill changes (verified by diff)" (every skill edited, sections rewritten or removed, revert commands),
+generated from a snapshot of the skills folder taken before and after the run.
 Then write a run-record JSON and `python ledger.py record-run --json <file>`.
 After the journal and `record-run` both succeed, write the completion-marker JSON at the exact path
 provided by the bootstrap prompt. This marker is the FINAL filesystem action. Do not finish your turn

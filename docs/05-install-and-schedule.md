@@ -132,6 +132,9 @@ Get-Content ...\dream\logs\run-<today>.log -Tail 40
   catch up after several missed nights).
 - `runner.*` — MCP servers for the headless run (`disable_mcp_servers`, `keep_mcp_servers`), retry
   attempts/backoff, and the total time budget.
+- `history.*` — the local skill history (`dir`, `changes_dir`) and how many changed lines each skill shows in
+  a run's report (`report_max_lines_per_skill`); `targets.watched_skills` lists the skills whose changes are
+  always itemized first.
 - `thresholds.*` — promotion (hit_count/distinct_days), decay_days, auto-apply confidence, importance floor,
   and the anti-bloat size budgets (`skill_budget_chars`, `skill_budget_overrides`,
   `active_work_budget_chars`, `active_work_max_threads`).

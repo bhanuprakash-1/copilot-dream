@@ -117,6 +117,41 @@ if ($lastOutcome -eq 'failed') { $issues.Add("last run failed: $lastFailureReaso
 if ($lastOutcome -eq 'no-outcome') { $warns.Add("last run in $($newestRunLog.Name) recorded no outcome (killed or crashed?)") }
 $lastLogTail = if ($newestRunLog) { (Get-Content -LiteralPath $newestRunLog.FullName -Tail 3) -join ' | ' } else { '' }
 
+# --- skill changes made by the newest finished run (skillaudit.py change records) ---
+$lastChanges = $null
+$auditedRuns = @{}
+foreach ($cf in @(Get-ChildItem (Join-Path $engine 'changes') -Filter '*.json' -EA SilentlyContinue)) {
+  try { $rec = Get-Content -LiteralPath $cf.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch { continue }
+  if ($rec.post) { $auditedRuns[[string]$rec.run] = $true }
+  if ($rec.post -and (-not $lastChanges -or [string]$rec.started_utc -gt [string]$lastChanges.started_utc)) { $lastChanges = $rec }
+}
+$historyEnabled = $true
+try { $historyCfg = (Get-Content (Join-Path $engine 'config.json') -Raw | ConvertFrom-Json).history; if ($historyCfg -and $historyCfg.enabled -eq $false) { $historyEnabled = $false } } catch {}
+if ($historyEnabled -and $lastRunTuple -and -not $auditedRuns.ContainsKey([string]$lastRunTuple[0])) {
+  $issues.Add(("no skill-change record for the last run {0}: its skill edits were not snapshotted (see the 'history:' lines in the run log)" -f ([string]$lastRunTuple[0]).Substring(0, [Math]::Min(8, ([string]$lastRunTuple[0]).Length))))
+}
+$changesSummary = $null
+if ($lastChanges) {
+  $firstFew = { param($list) @(@($list) | Select-Object -First 12) }
+  $changesSummary = [ordered]@{
+    run = $lastChanges.run8; date = $lastChanges.date; status = $lastChanges.status; report = $lastChanges.report
+    skills = @(@($lastChanges.skills) | ForEach-Object {
+      [ordered]@{ name = $_.name; watched = [bool]$_.watched; chars_before = $_.chars_before; chars_after = $_.chars_after
+                  lines_added = $_.added; lines_removed = $_.removed; lines_rewritten = $_.rewritten; lines_rewritten_into = $_.rewritten_into
+                  sections_rewritten = & $firstFew $_.sections_rewritten; sections_removed_count = @($_.sections_removed).Count
+                  sections_removed = & $firstFew $_.sections_removed; sections_added = & $firstFew $_.sections_added
+                  applier_summary = $_.applier_summary }
+    })
+    attribution = $lastChanges.attribution; changed_by_others = @($lastChanges.others | Where-Object { $_ }).Count
+    revert_command = "python ~/.copilot/dream/skillaudit.py revert --run $($lastChanges.run8) --skill <name> [--check]"
+  }
+  $touchedWatched = @(@($lastChanges.skills) | Where-Object { $_.watched -and ($_.removed -gt 0 -or $_.rewritten -gt 0 -or @($_.sections_removed).Count -gt 0) })
+  if ($touchedWatched.Count) {
+    $warns.Add(("watched skill text rewritten or removed by run {0} ({1}): {2} - review {3}" -f $lastChanges.run8, $lastChanges.date,
+      (($touchedWatched | ForEach-Object { "{0} (~{1} rewritten, -{2} removed)" -f $_.name, $_.rewritten, $_.removed }) -join ', '), $lastChanges.report))
+  }
+}
+
 # --- verdict ---
 $verdict = if ($issues.Count -gt 0) { 'RED' } elseif ($warns.Count -gt 0) { 'YELLOW' } else { 'GREEN' }
 
@@ -128,9 +163,9 @@ if ($Json) {
     configured_model=$modelSettings.Model; configured_context=$modelSettings.Context; configured_effort=$modelSettings.Effort;
     ledger_items=$lastRun.items; watermark=$watermark;
     trigger_task=$taskState; trigger_scheduler=$autoState; next_run=$(if($taskInfo){"$($taskInfo.NextRunTime)"});
-    pending_review=$pendingCount; issues=@($issues); warnings=@($warns)
+    pending_review=$pendingCount; last_changes=$changesSummary; issues=@($issues); warnings=@($warns)
   }
-  ($o | ConvertTo-Json -Compress); return
+  ($o | ConvertTo-Json -Compress -Depth 6); return
 }
 
 # --- human report ---
@@ -145,6 +180,11 @@ Write-Host ("  Watermark      : {0}" -f $(if($watermark){$watermark}else{'<not a
 Write-Host ("  Trigger        : TaskScheduler={0}  Scheduler={1}  next={2}" -f $(if($taskState){$taskState}else{'-'}), $(if($autoState){$autoState}else{'-'}), $(if($taskInfo){$taskInfo.NextRunTime}else{'-'}))
 Write-Host ("  Review pending : {0}" -f $pendingCount)
 if ($pendingCount -gt 0) { $pending | ForEach-Object { Write-Host ("      - {0}" -f $_.Name) } }
+if ($lastChanges) {
+  $skillLines = @(@($lastChanges.skills) | ForEach-Object { "{0}{1} +{2}/-{3}/~{4}->{5}" -f $_.name, $(if ($_.watched) { '*' } else { '' }), $_.added, $_.removed, $_.rewritten, $_.rewritten_into })
+  Write-Host ("  Skill changes  : run {0} ({1}): {2}" -f $lastChanges.run8, $lastChanges.date, $(if ($skillLines.Count) { $skillLines -join ', ' } else { 'none' }))
+  if ($skillLines.Count) { Write-Host ("                   report: {0}   (* watched; +added/-removed/~rewritten->into lines)" -f $lastChanges.report) }
+}
 if ($issues.Count) { Write-Host "  ISSUES:" -ForegroundColor Red; $issues | ForEach-Object { Write-Host "      * $_" -ForegroundColor Red } }
 if ($warns.Count)  { Write-Host "  WARNINGS:" -ForegroundColor Yellow; $warns | ForEach-Object { Write-Host "      * $_" -ForegroundColor Yellow } }
 if ($lastLogTail) { Write-Host "  Newest run log tail:"; Write-Host "      $lastLogTail" }
@@ -152,6 +192,7 @@ Write-Host ""
 Write-Host "  Review:  Get-Content $journalDir\$(if($newestJournal){$newestJournal.Name}else{'<date>.md'})"
 Write-Host "  Approve: powershell -File $engine\dream-approve.ps1 -List   (after the edit is in the skill; then -Slug <name>)"
 Write-Host "  Discard: powershell -File $engine\dream-reject.ps1 -List    (then -Slug <name> | -All)"
+Write-Host "  Undo a skill edit: python $engine\skillaudit.py revert --run <run8|date|last> --skill <name> --check  (then without --check)"
 Write-Host "  Or just reply in the Scout 'Dream digest + actions' thread in plain English (approve / reject / track)."
 Write-Host "  Policy:  $($modelSettings.Model) / $($modelSettings.Context) / $($modelSettings.Effort) (all agents)"
 Write-Host "  Run now: powershell -File $engine\run-dream.ps1"

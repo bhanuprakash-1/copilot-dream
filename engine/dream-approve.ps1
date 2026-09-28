@@ -110,3 +110,10 @@ foreach ($f in $targets) {
 }
 Write-Host ("`nDone. approved(ledger)={0}  files_deleted={1}" -f $approved, $deleted)
 Write-Host "Approved knowledge now lives in its target skill; these fingerprints won't be re-proposed."
+
+# Record the approved edits in the skill history so they can be inspected or reverted later.
+$audit = Join-Path $engine 'skillaudit.py'
+if ($deleted -gt 0 -and (Test-Path $audit)) {
+  $names = ($targets | ForEach-Object { $_.BaseName }) -join ', '
+  & $py $audit --config $config snapshot --message "Approved review proposal(s): $names" 2>&1 | ForEach-Object { Write-Host "  $_" }
+}

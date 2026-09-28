@@ -79,6 +79,16 @@ properties a stateless pass can't have:
 A claim's `scope` (`feature` / `topic` / `cross-cutting`) decides its horizon, and `reduce.py` enforces it, so
 learnings discovered during a feature still reach the reference skills instead of piling up in short-term memory.
 
+### Every edit is auditable and revertible
+The model edits skills in place, so the runner does not rely on its self-report: `skillaudit.py` snapshots the
+whole skills folder into a local git history before and after each run and derives the change report from
+the diff (sections added, rewritten or removed, exact lines). The Copilot CLI's per-session edit log tells the
+Dream's own edits apart from anything else that changed while it ran, so a concurrent edit of yours is never
+reported as, or reverted with, the Dream's. Any run's change to any skill can be undone with one command, and
+the undo keeps later edits unless they touched the same lines. Skills you care most about
+(`targets.watched_skills`) are itemized first and get a more conservative applier. A run lock keeps two runs,
+or a run and a revert, from overlapping.
+
 ### Model policy
 `config.model_policy` pins the cost-conscious model: `gpt-5.6-sol`, `long_context` (~1M tier),
 and `xhigh` reasoning. Every sub-agent, nested worker and retry explicitly requests that same

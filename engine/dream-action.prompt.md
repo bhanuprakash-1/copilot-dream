@@ -1,5 +1,5 @@
 ---
-description: Act on Dream review items from natural language - reject, approve/promote, or track. The deterministic helper scripts remain the source of truth; this prompt is the natural-language front-end.
+description: Act on Dream review items from natural language - reject, approve/promote, track, show what a run changed in a skill, or revert it. The deterministic helper scripts remain the source of truth; this prompt is the natural-language front-end.
 ---
 
 # Dream review actions (natural-language operator)
@@ -21,7 +21,10 @@ the CLI: `copilot -p ~/.copilot/dream/dream-action.prompt.md "reject the flaky-t
   `powershell -NoProfile -ExecutionPolicy Bypass -File ~/.copilot/dream/dream-approve.ps1 -List`
   Each line gives the proposal's slug (filename), its `target` skill, `fingerprint`, and title.
 - Recently applied (so I can reverse one) - read the newest `~/.copilot/dream/journal/<date>.md`,
-  sections `## Applied changes` and `## Active work snapshot`.
+  sections `## Applied changes`, `## Skill changes (verified by diff)` and `## Active work snapshot`.
+- What each run changed in each skill - `python ~/.copilot/dream/skillaudit.py runs` lists recent runs with
+  per-skill line counts (+added/-removed/~rewritten, `*` = watched skill); the line-by-line report of a run is
+  `~/.copilot/dream/changes/<date>-<run8>.md`.
 - The KEEP/DROP philosophy lives in `~/.copilot/skills/personal-context-sync/SKILL.md` - respect it
   whenever you apply an approval.
 
@@ -37,9 +40,33 @@ Map my words to one or more of the loaded items. Synonyms:
   -> find it in `~/.copilot/skills/dream-active-work/SKILL.md`, fold a durable version into the named
      (or best-fit) long-term skill with a cross-reference, then tighten or remove the active-work entry
      if it has fully graduated. No script needed; just report what you moved.
-- REVERSE an item that was auto-applied last night ("undo the X that got added", "that shouldn't be in <skill>")
-  -> locate the specific lines in the target skill (use the journal bullet), remove/adjust ONLY those
-     lines, and if the journal shows its fingerprint run
+- SHOW what changed ("what did the Dream change in <skill>", "what got pruned last night", "show me the
+  diff") -> pick the run with `skillaudit.py runs` (default: the latest), read that skill's block in the
+  run's report, and use `python ~/.copilot/dream/skillaudit.py show --run <run8> --skill <name>` for the exact
+  diff. Summarize by section: added, rewritten or tightened (quote old -> new), and removed topics, with the
+  applier's stated reason when the report has one. For older history: `skillaudit.py log --skill <name>`.
+- REVERT a run's change to a skill ("revert <skill>", "undo last night's edits to <skill>", "put it back")
+  -> preview with `python ~/.copilot/dream/skillaudit.py revert --run <run8|date|last> --skill <name> --check`;
+  if it prints OK, run it without `--check` and report its result plus the "Undo this revert" command it
+  prints. If it prints CONFLICT, do NOT force it: explain which later run touched the same lines and offer
+  (a) reverting the later run(s) first, newest first, or (b) `--restore`, which resets the file to its
+  pre-run content and drops later edits to it (they stay in history). Use `--restore` only after I choose
+  it, and add `--veto` only if I say the reverted content must never come back.
+- UNDO A REVERT ("undo that revert", "put it back the way the Dream had it")
+  -> `python ~/.copilot/dream/skillaudit.py undo-revert --id <id printed by the revert>` (or no `--id` for the
+  latest revert); it restores the files and the ledger statuses the revert changed.
+- RESTORE an earlier version ("restore <skill> to how it was on <date>")
+  -> `python ~/.copilot/dream/skillaudit.py restore --skill <name> --to <commit|tag|run:pre|run:base|run:post>`
+  (`--check` first); pick the point from `skillaudit.py log --skill <name>` or `runs`.
+- Notes: a run's report and `revert` cover only the Dream's own edits (from the Copilot CLI's edit log); files
+  changed by someone else during the run are listed separately and never reverted with the run. `revert`
+  prints REFUSED for a file that was also edited after the Dream's last edit, and all writing commands refuse
+  while a Dream run is in progress - relay those messages instead of working around them.
+- REVERSE a single auto-applied item while keeping the rest of that run's edit ("remove just the X line")
+  -> locate the specific lines in the target skill (use the journal bullet or the run report), remove/adjust
+     ONLY those lines, record it with
+     `python ~/.copilot/dream/skillaudit.py snapshot --message "Removed <what> from <skill>"`, and if the journal
+     shows its fingerprint run
      `python ~/.copilot/dream/ledger.py --config ~/.copilot/dream/config.json set-status --fingerprint <fp> --status rejected`
      so it will not be re-added.
 - TRACK / "start tracking" / "stop tracking" / drop a note -> `dream-note.ps1 <text>` (feeds tonight's run).
@@ -57,6 +84,7 @@ Map my words to one or more of the loaded items. Synonyms:
 
 ## Report (always end with this)
 A concise, skimmable confirmation - no narration:
-- One line per item: `<slug> -> <action> -> <target skill> (ledger: <status>)`.
+- One line per item: `<slug> -> <action> -> <target skill> (ledger: <status>)`; for a revert,
+  `<skill> -> reverted run <run8> (undo: <restore command>)`.
 - Then a final line: `Pending now: <N>` (re-count the review-queue).
 Keep it short enough to read on a phone.

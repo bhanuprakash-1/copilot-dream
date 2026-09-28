@@ -125,6 +125,23 @@ function Get-FreshApplyPlan([datetime]$Since) {
     Select-Object -First 1
 }
 
+# Skill history (skillaudit.py): snapshot around the run so every skill edit is itemized and revertible.
+# Never fatal - a history problem is logged and the Dream carries on.
+function Invoke-SkillHistory([string[]]$HistoryArgs) {
+  $oldPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $out = & python (Join-Path $engine 'skillaudit.py') --config $config @HistoryArgs 2>&1 | Out-String
+    $code = $LASTEXITCODE
+  } catch {
+    $out = "skillaudit failed to start: $($_.Exception.Message)"; $code = 1
+  } finally {
+    $ErrorActionPreference = $oldPreference
+  }
+  foreach ($line in ($out -split "`r?`n" | Where-Object { $_.Trim() })) { Log "history: $line" }
+  if ($code -ne 0) { Log "history: skillaudit exit=$code (continuing)" }
+}
+
 # Kill every process descended from $RootPid that started after $Since, children before parents.
 # Parent ids survive a parent's exit on Windows, so the walk still finds orphaned grandchildren.
 function Stop-DreamProcessTree([int]$RootPid, [datetime]$Since) {
@@ -182,11 +199,29 @@ if ($replayMode -and $ProposeOnly) {
   throw "ReplayPlan cannot be combined with ProposeOnly. Re-run the original propose-only window instead."
 }
 
+# One Dream run at a time. skillaudit.py refuses reverts/restores while this lock names a live process;
+# a lock left by a killed run expires with its process. Retries run inside the lock their parent holds.
+$lockFile = Join-Path $engine 'run.lock'
+function Remove-DreamLock { if ($Attempt -eq 1 -and -not $DryRun) { Remove-Item -LiteralPath $lockFile -Force -EA SilentlyContinue } }
+if ($Attempt -eq 1 -and -not $DryRun) {
+  $holder = $null
+  try { $holder = Get-Content -LiteralPath $lockFile -Raw -EA Stop | ConvertFrom-Json } catch {}
+  if ($holder) {
+    $startedAt = if ($holder.started_utc -is [datetime]) { $holder.started_utc.ToUniversalTime() } else {
+      try { [datetime]::Parse([string]$holder.started_utc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime() } catch { [datetime]::MinValue } }
+    $proc = Get-Process -Id ([int]$holder.pid) -EA SilentlyContinue
+    $live = $proc -and $proc.StartTime.ToUniversalTime() -le $startedAt.AddMinutes(1) -and ((Get-Date).ToUniversalTime() - $startedAt).TotalHours -lt 4
+    if ($live) { Log "DREAM skipped: another Dream run is in progress (pid $($holder.pid), started $($holder.started_utc))"; exit 6 }
+  }
+  ([ordered]@{ pid = $PID; started_utc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } | ConvertTo-Json -Compress) |
+    Set-Content -LiteralPath $lockFile -Encoding ascii
+}
+
 Log "DREAM start model=$Model attempt=$Attempt/$maxAttempts dryrun=$DryRun replay=$replayMode backgroundWait=${BackgroundTaskWaitSeconds}s host=$env:COMPUTERNAME"
 
 # ---- locate copilot ----
 $copilot = (Get-Command copilot -ErrorAction SilentlyContinue).Source
-if (-not $copilot) { Log "FATAL copilot not on PATH"; exit 3 }
+if (-not $copilot) { Log "FATAL copilot not on PATH"; Remove-DreamLock; exit 3 }
 
 # ---- Phase A: harvest ----
 if (-not $SkipHarvest -and -not $replayMode) {
@@ -203,7 +238,7 @@ if (-not $SkipHarvest -and -not $replayMode) {
   }
   Add-Content -Path (Join-Path $logsDir "run-$today.log") -Value $hout
   Write-Host $hout
-  if ($harvestExitCode -ne 0) { Log "FATAL harvest exit=$harvestExitCode"; exit 4 }
+  if ($harvestExitCode -ne 0) { Log "FATAL harvest exit=$harvestExitCode"; Remove-DreamLock; exit 4 }
 } elseif ($replayMode) {
   Log "harvest skipped (replay source: $replaySourcePlanPath)"
 } else {
@@ -223,6 +258,7 @@ if ($ledgerInitExitCode -ne 0) {
   Add-Content -Path (Join-Path $logsDir "run-$today.log") -Value $ledgerInitOut
   Write-Host $ledgerInitOut
   Log "FATAL ledger init exit=$ledgerInitExitCode"
+  Remove-DreamLock
   exit 5
 }
 
@@ -281,6 +317,7 @@ if ($replayMode) {
   Write-Host $replayOut
   if ($replayExitCode -ne 0) {
     Log "FATAL replay-plan filtering failed exit=$replayExitCode"
+    Remove-DreamLock
     exit 2
   }
   Log "prepared idempotent replay plan -> $replayPlanPath"
@@ -383,6 +420,7 @@ if ($DryRun) {
 
 $outFile = Join-Path $logsDir "dream-$today-$stamp.out.txt"
 $jobPidFile = Join-Path $logsDir "dream-$today-$stamp.job.pid"
+Invoke-SkillHistory @('run-begin', '--run', $sessionId, '--date', $today, '--receipts', $receiptDir)
 $runStart = Get-Date
 Log "invoking copilot (session $sessionId) -> $outFile (timeout ${TimeoutMinutes}m)"
 Log "copilot background-task drain timeout=${BackgroundTaskWaitSeconds}s"
@@ -431,6 +469,12 @@ $completionOk = (Test-Path $completionFile) -and ((Get-Item $completionFile).Las
 $success = $journalOk -and $completionOk
 Log "success=$success (exitcode=$code journalFresh=$journalOk completionFresh=$completionOk)"
 
+# Runs even when the run failed: a failed run can still have edited skills.
+$historyArgs = @('run-end', '--run', $sessionId, '--date', $today, '--receipts', $receiptDir,
+                 '--status', $(if ($success) { 'ok' } else { 'failed' }))
+if ($journalOk) { $historyArgs += @('--journal', $journalTarget) }
+Invoke-SkillHistory $historyArgs
+
 function Preserve-PendingApplyPlan($plan) {
   if (-not $plan) {
     Log "no fresh apply-plan found to preserve"
@@ -476,11 +520,13 @@ if ($success -and $replayMode) {
   Remove-Item -LiteralPath $replayPlanPath -Force -EA SilentlyContinue
   Log "replay success: watermark intentionally NOT advanced; completion receipt -> $replayDone"
   Log "DREAM ok (replay)"
+  Remove-DreamLock
   exit 0
 }
 elseif ($success -and $ProposeOnly) {
   Log "propose-only success: watermark intentionally NOT advanced (a future applying run reconsiders this window)"
   Log "DREAM ok (propose-only)"
+  Remove-DreamLock
   exit 0
 }
 elseif ($success) {
@@ -498,6 +544,7 @@ elseif ($success) {
   [IO.File]::WriteAllText($stateFp, ($state | ConvertTo-Json), $utf8NoBom)
   Log "watermark advanced -> $($state.last_run_utc)"
   Log "DREAM ok"
+  Remove-DreamLock
   exit 0
 } else {
   Log "failure-reason: $(Get-FailureReason -OutFile $outFile -ExitCode $code -TimedOut $timedOut)"
@@ -520,10 +567,13 @@ elseif ($success) {
       }
       if ($ProposeOnly) { $retryArgs.ProposeOnly = $true }
       & $PSCommandPath @retryArgs
-      exit $LASTEXITCODE
+      $retryExit = $LASTEXITCODE
+      Remove-DreamLock
+      exit $retryExit
     }
     Preserve-PendingApplyPlan $freshPlan
   }
   Log "DREAM failed (completion artifacts missing; watermark NOT advanced; next run reconsiders window)"
+  Remove-DreamLock
   exit 1
 }

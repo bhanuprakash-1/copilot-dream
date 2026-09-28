@@ -28,6 +28,9 @@ Dream automates the curation:
   reference skills; only the feature's live status stays in short-term memory.
 - **Keeps each skill at its own altitude** — instance detail (PR numbers, resource names, one handler's bug)
   only lands in a skill that is about exactly that; skills over their size budget are tightened, not grown.
+- **Shows its work, and lets you undo it** — every run is bracketed by snapshots of your skills folder, and a
+  per-run report lists every skill edited and every section added, rewritten or removed, with the exact lines
+  and a one-command revert per skill.
 - **Drops** noise — and records what it dropped so pruning stays auditable.
 
 ### Prior art (this is a known pattern)
@@ -155,9 +158,38 @@ Both call the deterministic helpers — `dream-approve.ps1` (record an approved 
   align with each repo's conventions and defers repo-owned knowledge to the repo — it never modifies anything
   inside your repositories.
 - **Runtime state stays local and git-ignored**: `config.json`, `ledger.db`, `journal/`, `review-queue/`,
-  `completion/`, `pending/`, `harvest/`, `logs/`, `archive/`, `state.json`, `inbox.md`. Your personal knowledge is
+  `completion/`, `pending/`, `harvest/`, `logs/`, `archive/`, `changes/`, `skills-history.git/`, `state.json`,
+  `inbox.md`. Your personal knowledge is
   **never** committed by this repo.
 - It never writes secrets/PII into a skill, even if present in a session.
+
+## See (and undo) exactly what changed
+
+Every run is bracketed by two snapshots of your skills folder in a local git history
+(`~/.copilot/dream/skills-history.git`, kept outside the skills folder and never pushed). The Dream's own edits
+are told apart from anything else that changed meanwhile using the Copilot CLI's per-session edit log, so an
+edit you make while a run is in flight is listed separately and never blamed on (or reverted with) the run.
+After each run, `skillaudit.py` writes `~/.copilot/dream/changes/<date>-<run>.md`: every skill the run edited,
+the sections it added, rewrote or removed, and the exact lines, next to the applier's own reason for each merge
+or tightening. A summary table is appended to the journal and surfaced by `dream-status.ps1` (and the morning
+digest). Skills you list in `targets.watched_skills` are always listed first, and a rewrite or removal in one
+of them turns the status YELLOW.
+
+```powershell
+python ~/.copilot/dream/skillaudit.py runs                                       # recent runs, what each changed
+python ~/.copilot/dream/skillaudit.py show    --run last --skill <name>          # the exact diff
+python ~/.copilot/dream/skillaudit.py revert  --run last --skill <name> --check  # preview undoing it
+python ~/.copilot/dream/skillaudit.py revert  --run last --skill <name>          # undo that run's change
+python ~/.copilot/dream/skillaudit.py undo-revert                                # undo the latest revert (files + ledger)
+python ~/.copilot/dream/skillaudit.py restore --skill <name> --to <commit>       # any recorded state
+python ~/.copilot/dream/skillaudit.py log     --skill <name>                     # full history of a skill
+```
+
+Revert is a three-way merge: it removes only what that run changed and keeps later edits, yours or later
+runs'. If a later edit touched the same lines it changes nothing and names the run to revert first; `--restore`
+resets the file to its state before the Dream's edits instead (the later edits stay in history). Writing
+commands refuse while a Dream run is in progress. Edits you make between runs, and approvals, are committed to
+the same history. In the digest thread you can just ask: *"what changed in X?"*, *"revert X"*.
 
 ---
 
@@ -165,7 +197,7 @@ Both call the deterministic helpers — `dream-approve.ps1` (record an approved 
 
 | Path | What |
 |---|---|
-| `engine/` | The system: `harvest.py`, `shard.py`, `reduce.py`, `ledger.py`, `run-dream.ps1`, `resolve-model-policy.ps1`, `dream-status.ps1`, `dream-note.ps1`, `dream-approve.ps1`, `dream-reject.ps1`, `dream-action.prompt.md`, `dream-consolidation.prompt.md`, `config.example.json`, `triggers/` (incl. `scout-*.example.json`). |
+| `engine/` | The system: `harvest.py`, `shard.py`, `reduce.py`, `ledger.py`, `skillaudit.py`, `run-dream.ps1`, `resolve-model-policy.ps1`, `dream-status.ps1`, `dream-note.ps1`, `dream-approve.ps1`, `dream-reject.ps1`, `dream-action.prompt.md`, `dream-consolidation.prompt.md`, `config.example.json`, `triggers/` (incl. `scout-*.example.json`). |
 | `skills/` | Template skills installed for you: `dream` (thin index/router) + `dream-active-work` (short-term). |
 | `install/install.ps1` | Idempotent bootstrap into `~/.copilot`. |
 | `examples/` | A filled example config + a synthetic journal showing the output. |
@@ -176,9 +208,9 @@ Both call the deterministic helpers — `dream-approve.ps1` (record an approved 
 Everything tunable lives in `engine/config.example.json` (copied to `~/.copilot/dream/config.json`): identity,
 harvest sources + repo roots, domain keywords, the reference skills to feed (plus a `general_skill` for
 cross-cutting learnings), thresholds (promotion, decay, auto-apply confidence, per-skill size budgets), the
-`map_reduce` parallelism caps (shard size, max shards, max parallel applies), and the `runner` block (the
+`map_reduce` parallelism caps (shard size, max shards, max parallel applies), the `runner` block (the
 headless run disables every MCP server — the Dream needs only local tools — and retries an attempt that
-applied nothing). `config.model_policy` pins the cost-conscious model (currently `gpt-5.6-sol`) and sets
+applied nothing), and the `history` block (skill snapshots and change reports). `config.model_policy` pins the cost-conscious model (currently `gpt-5.6-sol`) and sets
 `long_context` (~1M tier) with `xhigh` reasoning for the orchestrator and every sub-agent/retry.
 `resolve-model-policy.ps1` rejects models outside the allow-list, default context, and effort below
 `xhigh`. Change this cost-conscious pin only when the user explicitly requests it; never silently fall back.

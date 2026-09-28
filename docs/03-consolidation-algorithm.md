@@ -112,7 +112,10 @@ file, so parallel is safe):
    dedup first; preserve tone/tables/headers; a `promoted` claim is phrased as a now-durable fact. Claims
    that are vetoed, already covered, or too specific for the skill are skipped (`skipped_fingerprints` in the
    receipt). If the skill is over its `budget_chars`, the edit must not grow it — duplicates are merged and
-   wording tightened in the touched sections, without losing a fact.
+   wording tightened in the touched sections, without losing a fact. On a watched skill
+   (`targets.watched_skills`) the applier prefers adding or refining in place over restructuring and never
+   removes a topic. Every receipt lists each edit (`section`, `action`, `note`) so the run's change report can
+   show the reason next to the diff.
 2. **`dream-active-work`** — adds/refreshes active threads (one ≤ ~8-line entry per thread: goal, status,
    next step, key files, links — no design detail or learnings) and removes decayed ones. Over its budget or
    thread cap it is compacted: stale threads collapse to one-liners, the oldest drop off, and every removed
@@ -147,6 +150,13 @@ promoted, queued), applied changes per skill, the conversation signals (question
 preferences), a size check (each edited skill's chars before → after vs budget), the current active-work
 snapshot, review-queue links, repo-memory notes for the next in-repo
 session, and an audit sample of what was dropped and why. Then a run record via `ledger.py record-run`.
+
+After the orchestrator finishes, `run-dream.ps1` (not the model) snapshots the skills folder again and
+`skillaudit.py` appends **"## Skill changes (verified by diff)"** to the journal: each skill edited, lines
+added / removed / rewritten, the sections rewritten or removed, and a revert command, with the full line-level
+report in `changes/<date>-<run8>.md`. Because it is computed from snapshots, it also catches edits the applier
+did not mention; the Copilot CLI's edit log separates the Dream's edits from edits made by anyone else during
+the run. See [02-data-model](02-data-model.md#skill-history-and-change-reports-skillauditpy).
 
 ## Guardrails
 - Never write secrets/tokens/PII — even if present in a session.

@@ -71,6 +71,53 @@ replacing an existing normal journal for that date. Propose-only plans remain au
 be replayed as applying runs. Derived replay plans are internal files under `pending/.work/`; only
 preserved `pending/apply-plan-*.json` files are valid `-ReplayPlan` inputs.
 
+## Skill history and change reports (skillaudit.py)
+`skillaudit.py` keeps a local git history of the whole skills folder so every change is inspectable and
+revertible. The history is its own git directory (`history.dir`, default `~/.copilot/dream/skills-history.git`)
+with the skills folder as work tree, so nothing is added inside `~/.copilot/skills`; it has no remote and is
+never pushed. Files are stored byte-for-byte (no line-ending conversion).
+
+| When | What `run-dream.ps1` / the helpers do |
+|---|---|
+| before copilot starts | `skillaudit.py run-begin` commits anything changed since the last snapshot (manual edits, approvals, installs) and tags `dream-<date>-<run8>-pre` |
+| after the run (also on failure) | `skillaudit.py run-end` commits the result (tag `-post`), rebuilds the state just before the Dream's own edits from the Copilot CLI's per-session edit log (`session-state/<run>/rewind-file-snapshots`, tag `-base`), writes the change report and appends its summary to the journal |
+| after an approval | `dream-approve.ps1` runs `skillaudit.py snapshot` so the approved edit is its own commit (deferred while a run is in progress) |
+| revert / restore | the current state is snapshotted first, then the change is committed, so every undo can itself be undone |
+
+The `-base` state is the post-run tree with each file the Dream edited put back to its content from just
+before the Dream first touched it. The report and `revert` use `base..post`, so anything changed by someone
+else while the run was in flight (`pre..base`) is listed separately as `others` and never reverted with the
+run. A file edited by someone else *after* the Dream's last edit is listed in `mixed`; `revert` refuses it
+unless you pass `--restore`. If the edit log is unavailable, `base = pre` and the report says the attribution
+is unverified; if `run-begin` failed, the edit log alone still itemizes the Dream's edits.
+
+Per run it writes `changes/<date>-<run8>.json` (the record) and `.md` (the human report):
+
+| Field | Meaning |
+|---|---|
+| `run`, `run8`, `date`, `status` | the run (session id), and whether it ended `ok` or `failed` |
+| `pre` / `base` / `post` (+ tags) | before the run, just before the Dream's own edits, and after the run |
+| `attribution` | `cli-edit-log`, `snapshots-only` (edit log unavailable) or `unavailable` |
+| `outside_changes` | files committed by the pre-run snapshot, i.e. changed outside the Dream since the last run |
+| `others` / `mixed` | files changed by someone else during the run / files also edited after the Dream's last edit |
+| `receipts` | the run's APPLY receipt folder (used to find which claims a skill edit applied) |
+| `skills[]` | the Dream's edits per skill: `watched`, `chars_before`/`chars_after`, lines `added` / `removed` / `rewritten` (old lines) → `rewritten_into` (new lines), `sections_added` / `sections_removed` / `sections_rewritten` / `sections_extended`, and the applier's `applier_summary` + `applier_changes` from its receipt |
+
+Sections are markdown heading paths, so a pruned topic appears as a removed section and a merged or
+shortened bullet as a rewritten line in its section. APPLY receipts carry `summary` and a `changes` array
+(`section`, `action` = added / refined / merged / tightened / moved / removed, `note`) so the report can show
+the applier's reason next to the diff.
+
+`revert --run <ref> --skill <name>` undoes one run's change to one skill with a three-way merge per file:
+if the skill has not changed since the run, the content from before the Dream's edits comes back
+byte-for-byte; otherwise later edits are kept unless they overlap the lines that run changed, in which case
+nothing is written and the command names the later run to revert first (`--restore` resets the file instead).
+`--check` previews. The run's applied claims for that skill (receipt `fingerprints` minus
+`skipped_fingerprints`) are marked `reverted`, or `rejected` with `--veto`; their previous statuses are kept
+in `changes/reverts/<id>.json` so `undo-revert` can put back both the files and the ledger.
+`restore --skill <name> --to <commit|tag|run:pre|run:base|run:post>` sets a skill to any recorded state.
+While a Dream run holds `run.lock`, `revert`, `undo-revert` and `restore` refuse and `snapshot` defers.
+
 ## Ledger schema (ledger.db)
 
 ### Table `items` — one row per durable candidate
@@ -86,7 +133,7 @@ preserved `pending/apply-plan-*.json` files are valid `-ReplayPlan` inputs.
 | `importance` | 1–10 (would this help me in 6 months, in a different session?). |
 | `confidence` | `high` \| `medium` \| `low` — gates auto-apply vs review-queue. |
 | `target` | destination skill name, or `dream-active-work`, or `review-queue`. |
-| `status` | `active` \| `applied` \| `proposed` \| `archived` \| `dropped` \| `rejected`. |
+| `status` | `active` \| `applied` \| `proposed` \| `archived` \| `dropped` \| `rejected` \| `reverted`. |
 | `hit_count` | times this claim has been seen (bumped on every re-sighting). |
 | `distinct_days` | number of distinct days it's been seen (drives promotion). |
 | `first_seen` / `last_seen` / `last_day` | timestamps for decay + distinct-day counting. |

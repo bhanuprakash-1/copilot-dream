@@ -34,6 +34,10 @@ Do not put detail here - put it in the target skill and link it. Maintained nigh
 - The **Dream** (a nightly headless Copilot run) mines my recent conversations (prompts, answers, the
   back-and-forth) + git and refines these skills: learnings that outlive a feature go to the reference
   skills at their level of generality, only live status stays in `dream-active-work`, and noise is dropped.
+- Every skill edit is snapshotted in a local history (`~/.copilot/dream/skills-history.git`, never pushed). To see
+  or undo what a run changed: `python ~/.copilot/dream/skillaudit.py runs | show --run <run> --skill <s> |
+  revert --run <run> --skill <s> --check`; per-run reports are in `~/.copilot/dream/changes/`; `undo-revert`
+  undoes a revert.
 - `~/.copilot/dream/config.json` -> `model_policy` pins the cost-conscious model (currently `gpt-5.6-sol`)
   for every orchestrator, sub-agent and retry: explicitly use `long_context` and `xhigh`
   reasoning. Never inherit weaker tool defaults.

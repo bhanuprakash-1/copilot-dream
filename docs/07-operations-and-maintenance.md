@@ -18,7 +18,7 @@ It prints a **GREEN / YELLOW / RED** verdict plus:
 | Verdict | Meaning | Action |
 |---|---|---|
 | **GREEN** | ran recently, no pending review, trigger healthy | nothing |
-| **YELLOW** | ran fine but items await your approval, or journal is 28–50 h old | review the queue / check tonight |
+| **YELLOW** | ran fine but items await your approval, a watched skill had text rewritten or removed, or journal is 28–50 h old | review the queue or the skill changes / check tonight |
 | **RED** | didn't run (journal > 50 h), last run failed, no trigger, or copilot/python missing | see "Recovery" below |
 
 > Tip: wire `dream-status.ps1 -Json` into whatever morning automation you use — **Microsoft Scout (ClawPilot)**
@@ -29,11 +29,46 @@ It prints a **GREEN / YELLOW / RED** verdict plus:
 ## Daily routine (~2 min)
 1. Glance at the digest / run `dream-status.ps1`.
 2. If YELLOW for pending review: open `journal/<today>.md` (the summary + audit), skim `review-queue/*.md`.
-3. **Approve** the durable proposals you want and **reject** the ones you don't — reply in the Scout digest
+3. Check **Skill changes** (digest list, status line, or the journal's "Skill changes (verified by diff)"
+   table). If a skill you care about was rewritten or trimmed, open `changes/<date>-<run8>.md` for the exact
+   lines, and undo anything you don't want (next section).
+4. **Approve** the durable proposals you want and **reject** the ones you don't — reply in the Scout digest
    thread (`approve <slug>` / `reject <slug>`), run the CLI operator, or call `dream-approve.ps1` /
    `dream-reject.ps1` directly (three equivalent paths, [below](#reviewing--approvingrejecting-knowledge)).
    High-confidence durable facts already auto-applied overnight; the queue is only the uncertain ones.
-4. Drop notes for tonight — any of: `dream-note "..."`, tell any Copilot session *"add a dream note: ..."*, or edit `inbox.md`.
+5. Drop notes for tonight — any of: `dream-note "..."`, tell any Copilot session *"add a dream note: ..."*, or edit `inbox.md`.
+
+## Inspecting and undoing skill edits
+Every run is bracketed by snapshots of the skills folder (see
+[02-data-model](02-data-model.md#skill-history-and-change-reports-skillauditpy)), so any edit can be inspected
+and undone per skill — including edits to skills that existed before the Dream:
+
+```powershell
+python ~/.copilot/dream/skillaudit.py runs                                        # runs + per-skill +added/-removed/~rewritten
+python ~/.copilot/dream/skillaudit.py show    --run 2026-07-17 --skill <name>     # exact diff (run id, date or "last")
+python ~/.copilot/dream/skillaudit.py revert  --run 2026-07-17 --skill <name> --check
+python ~/.copilot/dream/skillaudit.py revert  --run 2026-07-17 --skill <name>     # prints the id to undo it
+python ~/.copilot/dream/skillaudit.py undo-revert [--id <id>]                     # undo a revert: files + ledger
+python ~/.copilot/dream/skillaudit.py restore --skill <name> --to <commit|tag>    # jump to any snapshot
+python ~/.copilot/dream/skillaudit.py log     --skill <name>                      # every recorded change to the skill
+```
+
+- A revert removes only what that run changed and keeps later edits (yours or later runs'). If a later edit
+  touched the same lines, nothing is written and the message names the run to revert first (newest first);
+  `--restore` resets the file to its state before the Dream's edits instead, with the later edits still in
+  history.
+- Reports and reverts cover only the Dream's own edits. A file someone else changed while the run was in
+  flight is listed under "changed during the run by something other than the Dream" and is left alone by
+  `revert` (use `restore` for it); a file also edited after the Dream's last edit is marked ⚠ and `revert`
+  refuses it unless you pass `--restore`.
+- `--veto` also marks the claims that run applied to the skill `rejected`, so they are never re-added;
+  without it they are marked `reverted` and can come back through normal processing. `undo-revert` restores
+  their previous statuses too.
+- `revert`, `undo-revert` and `restore` refuse while a Dream run is in progress (`run.lock`); try again after it.
+- Reverting `dream-active-work` brings compacted threads back, but the next run may compact it again unless
+  `thresholds.active_work_budget_chars` is raised.
+- In the Scout thread or with the CLI operator you can say it in plain English: *"what changed in X last
+  night?"*, *"revert X"*, *"undo that revert"*.
 
 ## Reviewing & approving/rejecting knowledge
 A review-queue proposal is a *suggested* skill edit awaiting your call. There are **three equivalent ways** to
@@ -122,6 +157,8 @@ fine; both trigger options need this), (c) `copilot` **authenticated**, (d) the 
 | `failure-reason: ... wrote tool calls as plain text` (exit 0, no journal) | the orchestrator model emitted fake tool calls/outputs instead of executing them | **handled automatically** when nothing was applied: the runner retries once with a fresh session (`runner.max_attempts`). If it recurs, run `run-dream.ps1` manually. |
 | Log shows `retrying in 120s with a fresh session` | an attempt failed before applying anything | normal self-healing; the final attempt's outcome is what counts. An attempt that produced an apply-plan or receipts is never retried — its plan goes to `pending/` for `-ReplayPlan`. |
 | Missed several nights | machine off, auth broken, or repeated failures | the watermark did not advance, so the next good run harvests everything since the last success (up to `window.max_hours`, 168h). Run `run-dream.ps1` once to catch up now. |
+| Log shows `DREAM skipped: another Dream run is in progress` | a run was started while another held `run.lock` (e.g. a manual run during the nightly one) | normal; the running one continues. A lock left by a killed run is ignored automatically once its process is gone. |
+| RED: `no skill-change record for the last run` | `skillaudit.py` failed (see the `history:` lines in `logs\run-<date>.log`), so that run's skill edits were not snapshotted | fix the cause (git on PATH? `~/.copilot/dream/skills-history.git` readable?), then `skillaudit.py snapshot --message "catch up"`; the Dream itself is unaffected. |
 | Output ends after MAP/REDUCE with `waitForPendingBackgroundTasks timed out` | the headless orchestrator ended its turn while background agents were still running, starting Copilot's shutdown drain | **handled by the current runner/prompt**: the drain is raised to 3300 s and the orchestrator must keep the same turn active with `read_agent(wait:true)`. If it still happens, the watermark stays put and the apply plan is copied to `pending/`. |
 | Runner "hangs" after the completion marker is written | a copilot subagent/MCP process is slow to tear down | **handled automatically**: the runner waits a 180 s grace, then proceeds by the journal + completion marker. Bounded by `-TimeoutMinutes` (default 60). |
 | Journal says harvest = 0 sessions | you didn't use Copilot that day | normal; the Dream still writes a short journal |

@@ -26,6 +26,12 @@
     "disable_mcp_servers": true,
     "keep_mcp_servers": []
   },
+  "history": {
+    "enabled": true,
+    "dir": "~/.copilot/dream/skills-history.git",
+    "changes_dir": "~/.copilot/dream/changes",
+    "report_max_lines_per_skill": 120
+  },
   "sources": {
     "cli_sessions": {
       "enabled": true,
@@ -66,6 +72,7 @@
       "team-conventions": "~/.copilot/skills/team-conventions/SKILL.md"
     },
     "general_skill": "team-conventions",
+    "watched_skills": ["service-architecture", "deployment-runbook"],
     "short_term_skill": "~/.copilot/skills/dream-active-work/SKILL.md",
     "index_skill": "~/.copilot/skills/dream/SKILL.md",
     "agent_memory": {

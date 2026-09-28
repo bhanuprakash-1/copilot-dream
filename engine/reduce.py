@@ -225,6 +225,7 @@ def cmd_plan(cfg, args):
     if general_skill not in long_skills:
         general_skill = None
     th = cfg.get("thresholds", {}) or {}
+    watched = set(targets_cfg.get("watched_skills") or [])
     keep_floor = th.get("importance_keep_floor", 4)
     skill_budget = int(th.get("skill_budget_chars", 60000))
     budget_overrides = th.get("skill_budget_overrides", {}) or {}
@@ -260,7 +261,7 @@ def cmd_plan(cfg, args):
             budget = int(budget_overrides.get(name, skill_budget))
             plan["by_skill"][name] = {"skill_file": tmap.get(name), "claims": [],
                                       "current_chars": chars, "budget_chars": budget,
-                                      "over_budget": chars > budget}
+                                      "over_budget": chars > budget, "watched": name in watched}
         c = dict(claim)
         if extra:
             c.update(extra)
@@ -362,9 +363,10 @@ def cmd_plan(cfg, args):
     print("PLAN OK  " + "  ".join("%s=%s" % (k, v) for k, v in plan["totals"].items()
                                   if not isinstance(v, (dict, list))))
     for name, v in plan["by_skill"].items():
-        print("  APPLY %-32s claims=%d size=%d/%d%s -> %s"
+        print("  APPLY %-32s claims=%d size=%d/%d%s%s -> %s"
               % (name, len(v["claims"]), v["current_chars"], v["budget_chars"],
-                 " OVER-BUDGET" if v["over_budget"] else "", v["skill_file"]))
+                 " OVER-BUDGET" if v["over_budget"] else "", " WATCHED" if v.get("watched") else "",
+                 v["skill_file"]))
     aw = plan["active_work"]
     print("  ACTIVE-WORK add=%d remove=%d size=%d/%d%s"
           % (plan["totals"]["active_add"], plan["totals"]["active_remove"], aw["current_chars"],
